@@ -80,14 +80,47 @@ case "$arch" in
 esac
 ui_print "— architecture: $sync_arch"
 
-# verify curl is available
-if ! curl --version >/dev/null 2>&1; then
-  abort "curl is required but not found in this environment"
+# detect download tool (curl > wget > busybox wget)
+download_tool=""
+if command -v curl >/dev/null 2>&1; then
+  download_tool="curl"
+elif command -v wget >/dev/null 2>&1; then
+  download_tool="wget"
+else
+  for bb in /data/adb/magisk/busybox /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox; do
+    if [ -f "$bb" ] && "$bb" wget --version >/dev/null 2>&1; then
+      download_tool="$bb wget"
+      break
+    fi
+  done
 fi
+if [ -z "$download_tool" ]; then
+  abort "no download tool found (curl or wget required)"
+fi
+
+# download helper
+download_file() {
+  local url="$1" output="$2"
+  case "$download_tool" in
+    curl) curl -L -o "$output" "$url" ;;
+    wget) wget -O "$output" "$url" 2>/dev/null ;;
+    *) $download_tool -O "$output" "$url" 2>/dev/null ;;
+  esac
+}
 
 # fetch latest version from GitHub API
 ui_print "— fetching latest version from GitHub..."
-latest_version=$(curl -s "https://api.github.com/repos/syncthing/syncthing/releases/latest" | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
+case "$download_tool" in
+  curl)
+    latest_version=$(curl -s "https://api.github.com/repos/syncthing/syncthing/releases/latest" | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
+    ;;
+  wget)
+    latest_version=$(wget -q -O - "https://api.github.com/repos/syncthing/syncthing/releases/latest" 2>/dev/null | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
+    ;;
+  *)
+    latest_version=$($download_tool -q -O - "https://api.github.com/repos/syncthing/syncthing/releases/latest" 2>/dev/null | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
+    ;;
+esac
 if [ -z "$latest_version" ]; then
   abort "failed to get latest version, check your network connection"
 fi
@@ -161,10 +194,10 @@ if [ "$skip_download" != true ]; then
 
   # download
   ui_print "— downloading $filename..."
-  if ! curl -L -o "$syncthing_tmpdir/$filename" "$download_url"; then
+  if ! download_file "$download_url" "$syncthing_tmpdir/$filename"; then
     if [ "$use_proxy" = "true" ]; then
       ui_print "! ghfast.top failed, retrying with GitHub..."
-      if ! curl -L -o "$syncthing_tmpdir/$filename" "$github_url"; then
+      if ! download_file "$github_url" "$syncthing_tmpdir/$filename"; then
         rm -rf "$syncthing_tmpdir"
         abort "download failed, check your network connection"
       fi
