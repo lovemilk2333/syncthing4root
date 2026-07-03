@@ -93,81 +93,100 @@ if [ -z "$latest_version" ]; then
 fi
 ui_print "— latest version: $latest_version"
 
+# check if already installed and up to date
+skip_download=false
+if [ -f "$runtime_dir/syncthing" ]; then
+  installed_ver=$("$runtime_dir/syncthing" --version 2>/dev/null | grep -o 'syncthing v[^ ]*' | sed 's/syncthing v//')
+  if [ -n "$installed_ver" ] && [ "$installed_ver" = "$latest_version" ]; then
+    ui_print "— syncthing $installed_ver already installed, skipping download"
+    mkdir -p "$syncthing_data_dir"
+    cp "$runtime_dir/syncthing" "$syncthing_data_dir/syncthing"
+    if [ -d "$runtime_dir/home" ]; then
+      cp -r "$runtime_dir/home" "$syncthing_data_dir/"
+    fi
+    skip_download=true
+  else
+    ui_print "— installed: ${installed_ver:-none}, latest: $latest_version, downloading"
+  fi
+fi
+
 # construct filenames and URLs
 filename="syncthing-linux-${sync_arch}-v${latest_version}.tar.gz"
 github_url="https://github.com/syncthing/syncthing/releases/download/v${latest_version}/${filename}"
 proxy_url="https://ghfast.top/${github_url}"
 
-# ask user about CDN mirror via volume keys
-if command -v getevent >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
-  ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  ui_print "— use ghfast.top proxy to accelerate downloads?"
-  ui_print "— [ Vol UP(+): ghfast.top ]"
-  ui_print "— [ Vol DOWN(-): GitHub ]"
-  START_TIME=$(date +%s)
-  use_proxy=""
-  while true; do
-    NOW_TIME=$(date +%s)
-    timeout 1 getevent -lc 1 2>&1 | grep KEY_VOLUME > "$TMPDIR/events" || true
-    if [ $(( NOW_TIME - START_TIME )) -gt 9 ]; then
-      ui_print "— no input detected after 10 seconds, using GitHub"
-      use_proxy="false"
-      break
-    elif grep -q KEY_VOLUMEUP "$TMPDIR/events"; then
-      ui_print "— using ghfast.top"
-      use_proxy="true"
-      break
-    elif grep -q KEY_VOLUMEDOWN "$TMPDIR/events"; then
-      ui_print "— using GitHub"
-      use_proxy="false"
-      break
-    fi
-  done
-  timeout 1 getevent -cl >/dev/null || true
-else
-  ui_print "— getevent unavailable, skipping proxy prompt, using GitHub"
-  use_proxy="false"
-fi
+if [ "$skip_download" != true ]; then
+  # ask user about CDN mirror via volume keys
+  if command -v getevent >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+    ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    ui_print "— use ghfast.top proxy to accelerate downloads?"
+    ui_print "— [ Vol UP(+): ghfast.top ]"
+    ui_print "— [ Vol DOWN(-): GitHub ]"
+    START_TIME=$(date +%s)
+    use_proxy=""
+    while true; do
+      NOW_TIME=$(date +%s)
+      timeout 1 getevent -lc 1 2>&1 | grep KEY_VOLUME > "$TMPDIR/events" || true
+      if [ $(( NOW_TIME - START_TIME )) -gt 9 ]; then
+        ui_print "— no input detected after 10 seconds, using GitHub"
+        use_proxy="false"
+        break
+      elif grep -q KEY_VOLUMEUP "$TMPDIR/events"; then
+        ui_print "— using ghfast.top"
+        use_proxy="true"
+        break
+      elif grep -q KEY_VOLUMEDOWN "$TMPDIR/events"; then
+        ui_print "— using GitHub"
+        use_proxy="false"
+        break
+      fi
+    done
+    timeout 1 getevent -cl >/dev/null || true
+  else
+    ui_print "— getevent unavailable, skipping proxy prompt, using GitHub"
+    use_proxy="false"
+  fi
 
-# set download URL
-if [ "$use_proxy" = "true" ]; then
-  download_url="$proxy_url"
-else
-  download_url="$github_url"
-fi
-
-# prepare temp directory
-syncthing_tmpdir="$TMPDIR/syncthing_download"
-mkdir -p "$syncthing_tmpdir"
-rm -rf "${syncthing_tmpdir:?}"/*
-
-# download
-ui_print "— downloading $filename..."
-if ! curl -L -o "$syncthing_tmpdir/$filename" "$download_url"; then
+  # set download URL
   if [ "$use_proxy" = "true" ]; then
-    ui_print "! ghfast.top failed, retrying with GitHub..."
-    if ! curl -L -o "$syncthing_tmpdir/$filename" "$github_url"; then
+    download_url="$proxy_url"
+  else
+    download_url="$github_url"
+  fi
+
+  # prepare temp directory
+  syncthing_tmpdir="$TMPDIR/syncthing_download"
+  mkdir -p "$syncthing_tmpdir"
+  rm -rf "${syncthing_tmpdir:?}"/*
+
+  # download
+  ui_print "— downloading $filename..."
+  if ! curl -L -o "$syncthing_tmpdir/$filename" "$download_url"; then
+    if [ "$use_proxy" = "true" ]; then
+      ui_print "! ghfast.top failed, retrying with GitHub..."
+      if ! curl -L -o "$syncthing_tmpdir/$filename" "$github_url"; then
+        rm -rf "$syncthing_tmpdir"
+        abort "download failed, check your network connection"
+      fi
+    else
       rm -rf "$syncthing_tmpdir"
       abort "download failed, check your network connection"
     fi
-  else
-    rm -rf "$syncthing_tmpdir"
-    abort "download failed, check your network connection"
   fi
-fi
 
-# extract syncthing binary from tar.gz
-ui_print "— extracting..."
-extract_dir="syncthing-linux-${sync_arch}-v${latest_version}"
-if ! tar -xzf "$syncthing_tmpdir/$filename" -C "$syncthing_tmpdir" "${extract_dir}/syncthing"; then
+  # extract syncthing binary from tar.gz
+  ui_print "— extracting..."
+  extract_dir="syncthing-linux-${sync_arch}-v${latest_version}"
+  if ! tar -xzf "$syncthing_tmpdir/$filename" -C "$syncthing_tmpdir" "${extract_dir}/syncthing"; then
+    rm -rf "$syncthing_tmpdir"
+    abort "extraction failed, the file may be corrupted"
+  fi
+
+  # copy binary to module
+  mkdir -p "$syncthing_data_dir"
+  cp "$syncthing_tmpdir/${extract_dir}/syncthing" "$syncthing_data_dir/syncthing"
   rm -rf "$syncthing_tmpdir"
-  abort "extraction failed, the file may be corrupted"
 fi
-
-# copy binary to module
-mkdir -p "$syncthing_data_dir"
-cp "$syncthing_tmpdir/${extract_dir}/syncthing" "$syncthing_data_dir/syncthing"
-rm -rf "$syncthing_tmpdir"
 
 # set permissions
 ui_print "— setting permissions..."
