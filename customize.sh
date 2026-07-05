@@ -6,6 +6,10 @@ PROPFILE=true
 POSTFSDATA=false
 LATESTARTSERVICE=true
 
+ui_print ""
+ui_print "welcome to use io.github.lovemilk2333.root_module.syncthing4root"
+ui_print ""
+
 if [ "$BOOTMODE" != true ]; then
   abort "-----------------------------------------------------------"
   ui_print "! please install in Magisk/KernelSU/APatch Manager"
@@ -47,7 +51,8 @@ syncthing_data_dir="$MODPATH/syncthing"
 
 # get module id for runtime paths
 MODID=$(grep '^id=' "$MODPATH/module.prop" | sed 's/id=//')
-runtime_dir="/data/adb/modules/${MODID}/syncthing"
+module_dir="/data/adb/modules/${MODID}/"
+runtime_dir="${module_dir}/syncthing"
 
 # check if this is an update (home dir exists on old module path)
 if [ -d "$runtime_dir/home" ]; then
@@ -108,28 +113,52 @@ download_file() {
   esac
 }
 
+download_url() {
+    local url="$1"
+    case "$download_tool" in
+        curl) curl -s "$url" ;;
+        wget) wget -q -O - "$url" 2>/dev/null ;;
+        *)    $download_tool -q -O - "$url" 2>/dev/null ;;
+    esac
+}
+
 # fetch latest version from GitHub API
-ui_print "— fetching latest version from GitHub..."
-case "$download_tool" in
-  curl)
-    latest_version=$(curl -s "https://api.github.com/repos/syncthing/syncthing/releases/latest" | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
-    ;;
-  wget)
-    latest_version=$(wget -q -O - "https://api.github.com/repos/syncthing/syncthing/releases/latest" 2>/dev/null | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
-    ;;
-  *)
-    latest_version=$($download_tool -q -O - "https://api.github.com/repos/syncthing/syncthing/releases/latest" 2>/dev/null | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
-    ;;
-esac
+# 1. 优先尝试从 GitHub API 获取最新正式版
+# GitHub 的 /releases/latest 接口会自动过滤掉 prerelease，直接返回最新的正式版
+json_data=$(download_url "https://api.github.com/repos/syncthing/syncthing/releases/latest")
+latest_version=$(echo "$json_data" | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
+
+# 2. 如果 GitHub 获取失败，回退到官方 upgrades 镜像
 if [ -z "$latest_version" ]; then
-  abort "failed to get latest version, check your network connection"
+    ui_print "— GitHub API failed. Trying official upgrades mirror..."
+    json_data=$(download_url "https://upgrades.syncthing.net/meta.json")
+    
+    if [ -n "$json_data" ]; then
+        # 核心逻辑：利用 grep -A（需要环境支持）或通过分行处理匹配
+        # 提取第一个满足 "prerelease": false 的 tag_name
+        # 这里的 sed 逻辑：
+        # - 把复杂的 json 整理成每组关键数据一行的格式，便于单行过滤
+        # - 先匹配包含 "tag_name" 且其后紧跟的结构中包含 "prerelease": false 的项
+        latest_version=$(echo "$json_data" | \
+            tr -d '\n\r ' | \
+            sed 's/},{"tag_name"/\n{"tag_name"/g' | \
+            grep '"prerelease":false' | \
+            head -n 1 | \
+            sed 's/.*"tag_name":"v//;s/".*//')
+    fi
 fi
+
+if [ -z "$latest_version" ]; then
+    abort "failed to get latest version, check your network connection"
+fi
+
 ui_print "— latest version: $latest_version"
 
 # check if already installed and up to date
 skip_download=false
 if [ -f "$runtime_dir/syncthing" ]; then
-  installed_ver=$("$runtime_dir/syncthing" --version 2>/dev/null | grep -o 'syncthing v[^ ]*' | sed 's/syncthing v//')
+  # give Sycnthing a fake `HOME` to avoid it crashes
+  installed_ver=$(HOME='/data/local/tmp' "$runtime_dir/syncthing" --version 2>/dev/null | grep -o 'syncthing v[^ ]*' | sed 's/syncthing v//')
   if [ -n "$installed_ver" ] && [ "$installed_ver" = "$latest_version" ]; then
     ui_print "— syncthing $installed_ver already installed, skipping download"
     mkdir -p "$syncthing_data_dir"
@@ -255,6 +284,9 @@ done
 
 wait_for_data
 
+# wait for filesystem and unlock data
+sleep 30
+
 syncthing_bin="${runtime_dir}/syncthing"
 syncthing_home="${runtime_dir}/home"
 log_file="${runtime_dir}/service.log"
@@ -274,13 +306,13 @@ cat > "$MODPATH/service.sh" <<EOF
 #!/system/bin/sh
 
 wait_for_data() {
-    while [ ! -f "/data/system/packages.xml" ]; do
+    while [ ! -f "/data/system/packages.xml" ] || [ ! -d "/data/data" ]; do
         sleep 5
     done
 }
 
 boot_timeout=0
-until [ "\$(getprop init.svc.bootanim)" = "stopped" ] || [ \$boot_timeout -ge 30 ]; do
+until [ "\$(getprop init.svc.bootanim)" = "stopped" ] || [ \$boot_timeout -ge 60 ]; do
     sleep 5
     boot_timeout=\$((boot_timeout + 5))
 done
@@ -322,28 +354,7 @@ else
   sed -i "s/name=.*/name=syncthing4root for Magisk/g" "$MODPATH/module.prop"
 fi
 
-# extract webroot last
-ui_print "— generating webui redirect..."
-web_address="127.0.0.1:8384"
-web_protocol="http"
-if [ -f "$syncthing_data_dir/home/config.xml" ]; then
-  parsed_addr=$(grep -A50 '<gui' "$syncthing_data_dir/home/config.xml" | grep '<address>' | sed 's/.*<address>//;s/<\/address>.*//' | head -1)
-  [ -n "$parsed_addr" ] && web_address="$parsed_addr"
-  parsed_tls=$(grep -A50 '<gui' "$syncthing_data_dir/home/config.xml" | grep -o 'tls="[^"]*"' | sed 's/tls="//;s/"//' | head -1)
-  [ "$parsed_tls" = "true" ] && web_protocol="https"
-fi
-case "$web_address" in
-  0.0.0.0:*) web_address="127.0.0.1${web_address#0.0.0.0}" ;;
-esac
-mkdir -p "$MODPATH/webroot"
-cat > "$MODPATH/webroot/index.html" <<EOF
-<!DOCTYPE html>
-<script>
-    document.location = '${web_protocol}://${web_address}/'
-</script>
-</html>
-EOF
-
 ui_print ""
 ui_print "— syncthing $latest_version ($sync_arch) installed"
 ui_print "— installation complete, please reboot your device"
+ui_print ""
