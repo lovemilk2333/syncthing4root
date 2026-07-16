@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Syncthing Manager</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #121212; --surface: #1e1e1e; --surface2: #2a2a2a;
+  --text: #e0e0e0; --text2: #999;
+  --green: #4caf50; --red: #ef5350; --blue: #42a5f5;
+  --radius: 12px;
+}
+body {
+  font: 15px/1.5 -apple-system, Helvetica, Arial, sans-serif;
+  background: var(--bg); color: var(--text); min-height: 100dvh;
+  display: flex; justify-content: center;
+}
+.container { width: 100%; max-width: 400px; padding: 24px 20px; }
+header { text-align: center; margin-bottom: 28px; }
+header h1 { font-size: 22px; font-weight: 600; }
+header .subtitle { font-size: 13px; color: var(--text2); }
+.card {
+  background: var(--surface); border-radius: var(--radius);
+  padding: 20px; margin-bottom: 16px;
+}
+.status-row {
+  display: flex; align-items: center; gap: 10px; font-size: 16px;
+}
+.dot {
+  width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+  transition: background .3s;
+}
+.dot.green { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.dot.red   { background: var(--red); box-shadow: 0 0 8px var(--red); }
+.dot.gray  { background: #555; }
+.status-detail { margin-top: 10px; font-size: 13px; color: var(--text2); }
+.status-detail code { color: var(--blue); }
+.btn {
+  display: block; width: 100%; padding: 14px; border: none; border-radius: var(--radius);
+  font-size: 15px; font-weight: 500; cursor: pointer; transition: opacity .15s, transform .1s;
+}
+.btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .4; pointer-events: none; }
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-success { background: var(--green); color: #fff; }
+.btn-danger  { background: var(--red);   color: #fff; }
+.btn-outline {
+  background: transparent; color: var(--text); border: 1px solid var(--surface2);
+}
+.btn-group { display: flex; gap: 10px; margin-top: 10px; }
+.btn-group .btn { flex: 1; }
+.setting-card { display: flex; justify-content: space-between; align-items: center; }
+.setting-label { font-size: 15px; }
+.toggle { position: relative; width: 48px; height: 26px; flex-shrink: 0; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle .slider {
+  position: absolute; inset: 0; background: #555; border-radius: 13px; cursor: pointer; transition: background .2s;
+}
+.toggle .slider::before {
+  content: ""; position: absolute; left: 3px; top: 3px;
+  width: 20px; height: 20px; background: #fff; border-radius: 50%; transition: transform .2s;
+}
+.toggle input:checked + .slider { background: var(--blue); }
+.toggle input:checked + .slider::before { transform: translateX(22px); }
+.log-box {
+  background: #0a0a0a; border-radius: var(--radius); padding: 12px;
+  font: 11px/1.4 monospace; color: var(--text2); max-height: 120px;
+  overflow-y: auto; margin-top: 16px; display: none;
+}
+.toast {
+  position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+  background: var(--surface2); color: var(--text); padding: 10px 20px;
+  border-radius: 8px; font-size: 13px; opacity: 0;
+  transition: opacity .3s; pointer-events: none; z-index: 999;
+}
+.toast.show { opacity: 1; }
+footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--text2); }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>Syncthing</h1>
+    <div class="subtitle">Root Module Manager</div>
+  </header>
+
+  <div class="card">
+    <div class="status-row">
+      <span class="dot gray" id="dot"></span>
+      <span id="statusText">Checking…</span>
+    </div>
+    <div class="status-detail" id="statusDetail"></div>
+  </div>
+
+  <div class="card">
+    <button class="btn btn-primary" id="btnOpen" onclick="openSyncthing()">📂 Open Syncthing UI</button>
+    <div class="btn-group">
+      <button class="btn btn-success" id="btnStart" onclick="startSyncthing()">▶ Start</button>
+      <button class="btn btn-danger"  id="btnStop"  onclick="stopSyncthing()">■ Stop</button>
+    </div>
+  </div>
+
+  <div class="card setting-card">
+    <span class="setting-label">Auto-start on boot</span>
+    <label class="toggle">
+      <input type="checkbox" id="autostartToggle" onchange="toggleAutostart()">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="card">
+    <button class="btn btn-outline" id="btnUpdate" onclick="updateSyncthing()">🔄 Check & Update Syncthing</button>
+  </div>
+
+  <div class="card" id="passwordSection">
+    <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="togglePasswordForm()">
+      <span class="setting-label">🔑 Account</span>
+      <span id="pwToggle" style="font-size:12px;color:var(--text2)">show</span>
+    </div>
+    <div id="passwordForm" style="display:none;margin-top:14px">
+      <div style="font-size:13px;color:var(--text2);margin-bottom:10px">Login: <span id="currentUsername"></span></div>
+      <input type="text" id="newUsername" placeholder="New username" style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:8px;background:var(--surface2);color:var(--text);font-size:14px">
+      <input type="password" id="pwForUsername" placeholder="Current password" style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:8px;background:var(--surface2);color:var(--text);font-size:14px">
+      <button class="btn btn-outline" onclick="changeUsername()" style="margin-bottom:14px">Update Username</button>
+      <hr style="border:none;border-top:1px solid var(--surface2);margin-bottom:14px">
+      <input type="password" id="pwOld" placeholder="Current password" style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:8px;background:var(--surface2);color:var(--text);font-size:14px">
+      <input type="password" id="pwNew" placeholder="New password (min 4 chars)" style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:8px;background:var(--surface2);color:var(--text);font-size:14px">
+      <input type="password" id="pwConfirm" placeholder="Confirm new password" style="width:100%;padding:10px;margin-bottom:10px;border:none;border-radius:8px;background:var(--surface2);color:var(--text);font-size:14px">
+      <button class="btn btn-outline" onclick="changePassword()">Update Password</button>
+    </div>
+  </div>
+
+  <pre class="log-box" id="logBox"></pre>
+
+  <footer><span id="versionInfo"></span></footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = location.origin;
+
+async function api(path, opts) {
+  opts = opts || {};
+  const headers = { 'Accept': 'application/json', ...opts.headers };
+  const res = await fetch(API + path, { ...opts, headers });
+  return res.json();
+}
+
+function toast(msg) {
+  var el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  setTimeout(function(){ el.classList.remove('show'); }, 2500);
+}
+
+function setLoading(btn, loading) {
+  if (!btn) return;
+  btn.disabled = loading;
+  if (loading) {
+    btn.dataset.text = btn.textContent;
+    btn.textContent = '⏳ …';
+  } else {
+    btn.textContent = btn.dataset.text || btn.textContent;
+  }
+}
+
+async function refreshStatus() {
+  var data = await api('/api/status');
+  var dot = document.getElementById('dot');
+  var txt = document.getElementById('statusText');
+  var detail = document.getElementById('statusDetail');
+  var btnStart = document.getElementById('btnStart');
+  var btnStop  = document.getElementById('btnStop');
+  var usernameEl = document.getElementById('currentUsername');
+  if (usernameEl) { usernameEl.textContent = data.username || 'admin'; }
+
+  if (data.running) {
+    dot.className = 'dot green';
+    txt.textContent = 'Running';
+    detail.innerHTML = 'PID: <code>' + data.pid + '</code> &middot; UI: <code>' + data.url + '</code>';
+    btnStart.disabled = true;
+    btnStop.disabled  = false;
+  } else {
+    dot.className = 'dot red';
+    txt.textContent = 'Stopped';
+    detail.innerHTML = 'UI: <code>' + data.url + '</code>';
+    btnStart.disabled = false;
+    btnStop.disabled  = true;
+  }
+}
+
+async function refreshAutostart() {
+  var data = await api('/api/autostart');
+  document.getElementById('autostartToggle').checked = data.autostart;
+}
+
+async function startSyncthing() {
+  var btn = document.getElementById('btnStart');
+  setLoading(btn, true);
+  var data = await api('/api/start', { method: 'POST' });
+  setLoading(btn, false);
+  if (data.error) { toast('❌ ' + data.error); return; }
+  toast('✅ Syncthing started (PID ' + data.pid + ')');
+  refreshStatus();
+}
+
+async function stopSyncthing() {
+  var btn = document.getElementById('btnStop');
+  setLoading(btn, true);
+  var data = await api('/api/stop', { method: 'POST' });
+  setLoading(btn, false);
+  if (data.error) { toast('❌ ' + data.error); return; }
+  toast('⏹ Syncthing stopped');
+  refreshStatus();
+}
+
+async function openSyncthing() {
+  var data = await api('/api/open-syncthing', { method: 'POST' });
+  if (data.error) {
+    var u = await api('/api/syncthing-url');
+    window.open(u.url, '_blank');
+    return;
+  }
+  toast('Opening Syncthing UI…');
+}
+
+async function toggleAutostart() {
+  var enabled = document.getElementById('autostartToggle').checked;
+  var data = enabled
+    ? await api('/api/autostart/enable', { method: 'POST' })
+    : await api('/api/autostart/disable', { method: 'POST' });
+  if (data.error) { toast('❌ ' + data.error); return; }
+  toast(enabled ? '✅ Autostart enabled' : '⏹ Autostart disabled');
+}
+
+function togglePasswordForm() {
+  var form = document.getElementById('passwordForm');
+  var toggle = document.getElementById('pwToggle');
+  var show = form.style.display !== 'block';
+  form.style.display = show ? 'block' : 'none';
+  toggle.textContent = show ? 'hide' : 'show';
+}
+
+async function changeUsername() {
+  var newName = document.getElementById('newUsername').value;
+  var pw = document.getElementById('pwForUsername').value;
+  if (!newName) { toast('❌ Enter a username'); return; }
+  if (!pw) { toast('❌ Enter your current password'); return; }
+  var data = await api('/api/change-username', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: pw, new_username: newName }),
+  });
+  if (data.error) { toast('❌ ' + data.error); return; }
+  document.getElementById('newUsername').value = '';
+  document.getElementById('pwForUsername').value = '';
+  refreshStatus();
+  toast('✅ Username updated — re-login required');
+}
+
+async function changePassword() {
+  var oldPw = document.getElementById('pwOld').value;
+  var newPw = document.getElementById('pwNew').value;
+  var confirmPw = document.getElementById('pwConfirm').value;
+  if (!oldPw) { toast('❌ Enter current password'); return; }
+  if (newPw !== confirmPw) { toast('❌ Passwords do not match'); return; }
+  if (newPw.length < 4) { toast('❌ Password must be at least 4 characters'); return; }
+  var data = await api('/api/change-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ old_password: oldPw, new_password: newPw }),
+  });
+  if (data.error) { toast('❌ ' + data.error); return; }
+  document.getElementById('pwOld').value = '';
+  document.getElementById('pwNew').value = '';
+  document.getElementById('pwConfirm').value = '';
+  document.getElementById('passwordForm').style.display = 'none';
+  document.getElementById('pwToggle').textContent = 'show';
+  toast('✅ Password updated');
+}
+
+async function updateSyncthing() {
+  var btn = document.getElementById('btnUpdate');
+  btn.disabled = true;
+  btn.textContent = '⏳ Checking...';
+  var data = await api('/api/update', { method: 'POST' });
+  if (data.error) { toast('❌ ' + data.error); }
+  else { toast('✅ ' + data.message); }
+  btn.disabled = false;
+  btn.textContent = '🔄 Check & Update Syncthing';
+  refreshStatus();
+}
+
+refreshStatus();
+refreshAutostart();
+setInterval(refreshStatus, 10000);
+</script>
+</body>
+</html>

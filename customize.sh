@@ -60,6 +60,10 @@ if [ -d "$runtime_dir/home" ]; then
   mkdir -p "$syncthing_data_dir"
   # copy existing config to staging so service/webroot generation can use it
   cp -r "$runtime_dir/home" "$syncthing_data_dir/"
+  # preserve web server credentials (username / password)
+  [ -f "$runtime_dir/.auth_config" ] && cp "$runtime_dir/.auth_config" "$syncthing_data_dir/"
+  # preserve autostart toggle state
+  [ -f "$runtime_dir/.autostart_disabled" ] && cp "$runtime_dir/.autostart_disabled" "$syncthing_data_dir/"
 else
   mkdir -p "$syncthing_data_dir"
 fi
@@ -256,6 +260,8 @@ set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm_recursive "$syncthing_data_dir" 0 3005 0755 0644
 set_perm "$syncthing_data_dir/syncthing" 0 3005 0755
 set_perm "$MODPATH/uninstall.sh" 0 0 0755
+set_perm "$MODPATH/update.sh" 0 0 0755
+set_perm "$MODPATH/syncthing4root_webserver" 0 0 0755
 
 # verify binary exists
 if [ ! -f "$syncthing_data_dir/syncthing" ]; then
@@ -287,6 +293,18 @@ wait_for_data
 # wait for filesystem and unlock data
 sleep 30
 
+# start web server (management UI)
+web_bin="${module_dir}/syncthing4root_webserver"
+if [ -f "\$web_bin" ]; then
+    \$web_bin --port 48344 --module-dir "${module_dir}" &
+fi
+
+autostart_flag="${runtime_dir}/.autostart_disabled"
+# respect autostart toggle
+if [ -f "\$autostart_flag" ]; then
+    exit 0
+fi
+
 syncthing_bin="${runtime_dir}/syncthing"
 syncthing_home="${runtime_dir}/home"
 log_file="${runtime_dir}/service.log"
@@ -297,6 +315,8 @@ if [ -f "\$syncthing_bin" ]; then
     [ -z "\$user_storage" ] && user_storage="/storage/emulated/0"
     export HOME="\$user_storage"  # home is only for the path \`~\`
     \$syncthing_bin serve --home="\${syncthing_home}" --no-browser > "\$log_file" 2>&1 &
+    # write PID for web_server status check (boot-start without pidfile)
+    echo \$! > "${runtime_dir}/syncthing.pid"
 fi
 EOF
 set_perm "$service_dir/syncthing_service.sh" 0 0 0755
@@ -319,6 +339,19 @@ done
 
 wait_for_data
 
+# start web server (management UI)
+web_bin="${module_dir}/syncthing4root_webserver"
+if [ -f "\$web_bin" ]; then
+    \$web_bin --port 48344 --module-dir "${module_dir}" &
+fi
+
+autostart_flag="${runtime_dir}/.autostart_disabled"
+
+# respect autostart toggle
+if [ -f "\$autostart_flag" ]; then
+    exit 0
+fi
+
 syncthing_bin="${runtime_dir}/syncthing"
 syncthing_home="${runtime_dir}/home"
 log_file="${runtime_dir}/service.log"
@@ -329,6 +362,8 @@ if [ -f "\$syncthing_bin" ]; then
     [ -z "\$user_storage" ] && user_storage="/storage/emulated/0"
     export HOME="\$user_storage"
     \$syncthing_bin serve --home="\${syncthing_home}" --no-browser > "\$log_file" 2>&1 &
+    # write PID for web_server status check (boot-start without pidfile)
+    echo \$! > "${runtime_dir}/syncthing.pid"
 fi
 EOF
 set_perm "$MODPATH/service.sh" 0 0 0755
