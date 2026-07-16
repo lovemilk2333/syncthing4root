@@ -21,7 +21,8 @@
 | ▶ Start | 启动 Syncthing 守护进程 |
 | ■ Stop | 停止 Syncthing |
 | Auto-start on boot | 开关开机自启动 |
-| 🔑 Change Password | 修改管理后台登录密码 |
+| 🔑 Account | 修改管理后台登录用户名 / 密码 |
+| 🔄 Check & Update Syncthing | 检查并更新 Syncthing 到最新版 |
 
 管理后台默认地址: `https://127.0.0.1:48344/ui/` (默认账号 `admin` / `admin`)
 
@@ -53,19 +54,19 @@
 | GET | `/api/autostart` | 自启动开关状态 |
 | POST | `/api/autostart/enable` | 启用开机自启动 |
 | POST | `/api/autostart/disable` | 禁用开机自启动 |
+| POST | `/api/update` | 更新 Syncthing 到最新版 |
 | POST | `/api/change-password` | 修改登录密码 (需旧密码验证) |
+| POST | `/api/change-username` | 修改登录用户名 (需密码验证) |
 
 ### Web 服务器参数
 
 ```
-syncthing4root_webserver --port <端口> --module-dir <模块目录> [--no-tls] [--auth-username <用户>] [--auth-password <密码>]
+syncthing4root_webserver --port <端口> --module-dir <模块目录> [--no-tls]
 ```
 
 - `--port`: 监听端口 (默认 `48344`)
 - `--module-dir`: 模块路径 (默认根据自身路径推算)
 - `--no-tls`: 禁用 TLS (使用 HTTP 明文)
-- `--auth-username`: 覆盖登录用户名
-- `--auth-password`: 覆盖登录密码
 
 ## 配置迁移 (从 Syncthing Android App)
 
