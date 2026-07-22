@@ -9,7 +9,7 @@ func baseCfg() netPolicyConfig {
 
 func TestEvaluatePolicy_NoConditions(t *testing.T) {
 	c := baseCfg()
-	run, _ := evaluatePolicy(c, "cellular", "", false)
+	run, _ := evaluatePolicy(c, "cellular", "", false, false)
 	if !run {
 		t.Fatal("no enabled condition should default to run=true")
 	}
@@ -20,13 +20,13 @@ func TestEvaluatePolicy_WifiWhitelist(t *testing.T) {
 	c.WiFi.Enabled = true
 	c.WiFi.Whitelist = []string{"Home", "Office"}
 
-	if run, _ := evaluatePolicy(c, "wifi", "Home", false); !run {
+	if run, _ := evaluatePolicy(c, "wifi", "Home", false, false); !run {
 		t.Error("whitelisted SSID on wifi should run")
 	}
-	if run, _ := evaluatePolicy(c, "wifi", "Cafe", false); run {
+	if run, _ := evaluatePolicy(c, "wifi", "Cafe", false, false); run {
 		t.Error("non-whitelisted SSID should not run")
 	}
-	if run, _ := evaluatePolicy(c, "cellular", "Home", false); run {
+	if run, _ := evaluatePolicy(c, "cellular", "Home", false, false); run {
 		t.Error("wifi condition must be false when not on wifi")
 	}
 }
@@ -35,10 +35,10 @@ func TestEvaluatePolicy_Cellular(t *testing.T) {
 	c := baseCfg()
 	c.Cellular.Enabled = true
 
-	if run, _ := evaluatePolicy(c, "cellular", "", false); run {
+	if run, _ := evaluatePolicy(c, "cellular", "", false, false); run {
 		t.Error("should stop on cellular")
 	}
-	if run, _ := evaluatePolicy(c, "wifi", "X", false); !run {
+	if run, _ := evaluatePolicy(c, "wifi", "X", false, false); !run {
 		t.Error("should run when not on cellular")
 	}
 }
@@ -47,11 +47,38 @@ func TestEvaluatePolicy_Probe(t *testing.T) {
 	c := baseCfg()
 	c.Probe.Enabled = true
 
-	if run, _ := evaluatePolicy(c, "wifi", "X", true); !run {
+	if run, _ := evaluatePolicy(c, "wifi", "X", true, false); !run {
 		t.Error("probe up should run")
 	}
-	if run, _ := evaluatePolicy(c, "wifi", "X", false); run {
+	if run, _ := evaluatePolicy(c, "wifi", "X", false, false); run {
 		t.Error("probe down should stop")
+	}
+}
+
+func TestEvaluatePolicy_Power(t *testing.T) {
+	c := baseCfg()
+	c.Power.Enabled = true
+
+	if run, _ := evaluatePolicy(c, "wifi", "X", false, true); run {
+		t.Error("should stop when battery saver is on")
+	}
+	if run, _ := evaluatePolicy(c, "wifi", "X", false, false); !run {
+		t.Error("should run when battery saver is off")
+	}
+}
+
+func TestParsePowerSave(t *testing.T) {
+	if !parsePowerSaveFlag("1\n") {
+		t.Error("low_power=1 should be on")
+	}
+	if parsePowerSaveFlag("0\n") {
+		t.Error("low_power=0 should be off")
+	}
+	if !parseDumpsysPowerSave("  mSettingBatterySaverEnabled=true") {
+		t.Error("dumpsys battery-saver true not detected")
+	}
+	if parseDumpsysPowerSave("  mLowPowerModeEnabled=false") {
+		t.Error("dumpsys battery-saver false misread as on")
 	}
 }
 
@@ -63,11 +90,11 @@ func TestEvaluatePolicy_CombineAND(t *testing.T) {
 	c.Probe.Enabled = true
 
 	// wifi passes, probe fails → AND false
-	if run, _ := evaluatePolicy(c, "wifi", "Home", false); run {
+	if run, _ := evaluatePolicy(c, "wifi", "Home", false, false); run {
 		t.Error("AND: one failing condition should stop")
 	}
 	// both pass → true
-	if run, _ := evaluatePolicy(c, "wifi", "Home", true); !run {
+	if run, _ := evaluatePolicy(c, "wifi", "Home", true, false); !run {
 		t.Error("AND: all passing should run")
 	}
 }
@@ -80,11 +107,11 @@ func TestEvaluatePolicy_CombineOR(t *testing.T) {
 	c.Probe.Enabled = true
 
 	// wifi fails but probe up → OR true
-	if run, _ := evaluatePolicy(c, "cellular", "Home", true); !run {
+	if run, _ := evaluatePolicy(c, "cellular", "Home", true, false); !run {
 		t.Error("OR: one passing condition should run")
 	}
 	// both fail → false
-	if run, _ := evaluatePolicy(c, "cellular", "Cafe", false); run {
+	if run, _ := evaluatePolicy(c, "cellular", "Cafe", false, false); run {
 		t.Error("OR: all failing should stop")
 	}
 }

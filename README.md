@@ -80,13 +80,14 @@ syncthing4root_webserver --port <端口> --module-dir <模块目录> [--no-tls]
 - **检查间隔**: 轮询周期 (默认 30 秒, 范围 5–3600).
 - **WiFi 白名单**: 仅当连接到白名单内 SSID 的 WiFi 时判定为"应运行". 支持"📡 扫描当前 SSID"一键填入.
 - **Stop on cellular**: 使用移动数据 (蜂窝网络) 时判定为"应停止".
+- **Follow battery saver**: 系统进入省电模式 (Battery Saver) 时判定为"应停止".
 - **Reachability probe**: `Ping` (ICMP) 或 `TCPing` 探测指定 target 可达才判定为"应运行".
   - `timeout`: 单次探测超时 (ms).
   - `up threshold` / `down threshold`: 连续成功 / 失败次数阈值 (滞回, 避免网络抖动导致频繁启停).
 
 > [!NOTE]
 > - 策略开启时会覆盖手动 Start / Stop 操作 (下一个检查周期按策略调和), 状态栏 `auto` 徽标即表示处于自动模式.
-> - 网络检测依赖 Android 系统命令 (`ip route`, `cmd wifi status` / `dumpsys wifi`, `ping`), 需 root. 不同 ROM 输出格式可能不同, SSID 识别失败时白名单条件会判定为不满足.
+> - 网络 / 省电检测依赖 Android 系统命令 (`ip route`, `cmd wifi status` / `dumpsys wifi`, `ping`, `settings get global low_power` / `dumpsys power`), 需 root. 不同 ROM 输出格式可能不同, SSID 识别失败时白名单条件会判定为不满足.
 > - 配置持久化于 `syncthing/.netpolicy.json`.
 
 ## 配置迁移 (从 Syncthing Android App)

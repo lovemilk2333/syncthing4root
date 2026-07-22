@@ -25,6 +25,10 @@ type cellularPolicy struct {
 	Enabled bool `json:"enabled"` // true = treat cellular as "should stop"
 }
 
+type powerPolicy struct {
+	Enabled bool `json:"enabled"` // true = stop when system battery saver is on
+}
+
 type probePolicy struct {
 	Enabled       bool   `json:"enabled"`
 	Type          string `json:"type"`   // "ping" | "tcp"
@@ -41,6 +45,7 @@ type netPolicyConfig struct {
 	IntervalSec int            `json:"interval_sec"`
 	WiFi        wifiPolicy     `json:"wifi"`
 	Cellular    cellularPolicy `json:"cellular"`
+	Power       powerPolicy    `json:"power"`
 	Probe       probePolicy    `json:"probe"`
 }
 
@@ -51,6 +56,7 @@ func defaultNetPolicy() netPolicyConfig {
 		IntervalSec: 30,
 		WiFi:        wifiPolicy{Enabled: false, Whitelist: []string{}},
 		Cellular:    cellularPolicy{Enabled: false},
+		Power:       powerPolicy{Enabled: false},
 		Probe: probePolicy{
 			Enabled: false, Type: "ping", Target: "", Port: 22,
 			TimeoutMS: 2000, UpThreshold: 2, DownThreshold: 3,
@@ -243,6 +249,42 @@ func parseSSIDFromDumpsys(s string) string {
 	return ssid
 }
 
+// detectPowerSave reports whether the system battery-saver (low-power) mode is
+// currently on. Falls back across a couple of sources since ROMs vary.
+func detectPowerSave() bool {
+	// primary: global setting flipped by Battery Saver (1 = on)
+	if out, err := exec.Command("settings", "get", "global", "low_power").CombinedOutput(); err == nil {
+		if parsePowerSaveFlag(string(out)) {
+			return true
+		}
+	}
+	// fallback: dumpsys power exposes mSettingBatterySaverEnabled / mLowPowerModeEnabled
+	if out, err := exec.Command("dumpsys", "power").CombinedOutput(); err == nil {
+		if parseDumpsysPowerSave(string(out)) {
+			return true
+		}
+	}
+	return false
+}
+
+// parsePowerSaveFlag reads the `settings get global low_power` output.
+func parsePowerSaveFlag(s string) bool {
+	return strings.TrimSpace(s) == "1"
+}
+
+// parseDumpsysPowerSave looks for a battery-saver-enabled flag set to true.
+func parseDumpsysPowerSave(s string) bool {
+	for _, line := range strings.Split(s, "\n") {
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "mSettingBatterySaverEnabled=") ||
+			strings.HasPrefix(l, "mLowPowerModeEnabled=") ||
+			strings.HasPrefix(l, "mBatterySaverEnabled=") {
+			return strings.HasSuffix(l, "=true")
+		}
+	}
+	return false
+}
+
 // runProbe performs a single reachability check (ping or tcp).
 func runProbe(p probePolicy) bool {
 	if p.Target == "" {
@@ -273,6 +315,7 @@ func runProbe(p probePolicy) bool {
 type netState struct {
 	Transport   string `json:"transport"`
 	SSID        string `json:"ssid"`
+	PowerSave   bool   `json:"power_save"`
 	ProbeOK     bool   `json:"probe_ok"`
 	ProbeUp     bool   `json:"probe_up"` // committed hysteresis state
 	ShouldRun   bool   `json:"should_run"`
@@ -292,7 +335,7 @@ func ssidInWhitelist(ssid string, list []string) bool {
 // evaluatePolicy computes whether Syncthing should run given the config and the
 // detected transport/ssid/probe-up. Only enabled conditions contribute; they are
 // combined with AND or OR. If no condition is enabled, returns (true, reason).
-func evaluatePolicy(c netPolicyConfig, transport, ssid string, probeUp bool) (bool, string) {
+func evaluatePolicy(c netPolicyConfig, transport, ssid string, probeUp, powerSave bool) (bool, string) {
 	type cond struct {
 		name string
 		val  bool
@@ -307,6 +350,10 @@ func evaluatePolicy(c netPolicyConfig, transport, ssid string, probeUp bool) (bo
 		// "stop on cellular" → condition is satisfied when NOT on cellular
 		v := transport != "cellular"
 		conds = append(conds, cond{"not-cellular", v})
+	}
+	if c.Power.Enabled {
+		// "stop in battery saver" → condition satisfied when NOT in power save
+		conds = append(conds, cond{"not-powersave", !powerSave})
 	}
 	if c.Probe.Enabled {
 		conds = append(conds, cond{"probe", probeUp})
@@ -367,10 +414,15 @@ func detectNetState(c netPolicyConfig, commit bool) netState {
 		ssid = detectSSID()
 	}
 	raw, up := evalProbeHysteresis(c, commit)
-	shouldRun, why := evaluatePolicy(c, transport, ssid, up)
+	powerSave := false
+	if c.Power.Enabled {
+		powerSave = detectPowerSave()
+	}
+	shouldRun, why := evaluatePolicy(c, transport, ssid, up, powerSave)
 	return netState{
 		Transport: transport, SSID: ssid,
-		ProbeOK: raw, ProbeUp: up,
+		PowerSave: powerSave,
+		ProbeOK:   raw, ProbeUp: up,
 		ShouldRun: shouldRun, Enabled: c.Enabled,
 		Explanation: why,
 	}

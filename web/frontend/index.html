@@ -206,6 +206,17 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
         <div class="muted">When on mobile data, Syncthing is kept stopped.</div>
       </div>
 
+      <!-- Power save -->
+      <div class="subsec">
+        <div class="subsec-head">
+          <span class="setting-label">Follow battery saver</span>
+          <label class="toggle">
+            <input type="checkbox" id="npPowerEnabled"><span class="slider"></span>
+          </label>
+        </div>
+        <div class="muted">When the system battery saver is on, Syncthing is kept stopped.</div>
+      </div>
+
       <!-- Probe -->
       <div class="subsec">
         <div class="subsec-head">
@@ -399,6 +410,7 @@ function applyNetConfig(cfg) {
   npWifiList = (cfg.wifi.whitelist || []).slice();
   renderChips();
   document.getElementById('npCellEnabled').checked = cfg.cellular.enabled;
+  document.getElementById('npPowerEnabled').checked = cfg.power.enabled;
   document.getElementById('npProbeEnabled').checked = cfg.probe.enabled;
   document.getElementById('npProbeType').value = cfg.probe.type;
   document.getElementById('npProbePort').value = cfg.probe.port;
@@ -418,6 +430,7 @@ function renderNetState(cfg, st) {
   var net = document.getElementById('netDetail');
   var parts = ['Net: <code>' + st.transport + '</code>'];
   if (st.ssid) parts.push('SSID: <code>' + st.ssid + '</code>');
+  if (st.power_save) parts.push('<code style="color:var(--red)">battery saver</code>');
   net.innerHTML = parts.join(' &middot; ');
 
   var s = document.getElementById('npState');
@@ -456,6 +469,7 @@ async function saveNetPolicy() {
       whitelist: npWifiList.slice(),
     },
     cellular: { enabled: document.getElementById('npCellEnabled').checked },
+    power: { enabled: document.getElementById('npPowerEnabled').checked },
     probe: {
       enabled: document.getElementById('npProbeEnabled').checked,
       type: document.getElementById('npProbeType').value,
