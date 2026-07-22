@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"embed"
@@ -17,9 +19,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 )
 
 //go:embed frontend/*
@@ -33,10 +37,10 @@ var (
 	syncthingLog  string
 	autostartFlag string
 	pidFile       string
-	cachedSyncthingURL string
-	authUser    string
-	authPass    string
-	useTLS      = true
+	authUser      string
+	authPassHash  string // bcrypt hash of the password
+	useTLS        = true
+	startMu       sync.Mutex // serialize start/stop/update so we never launch twice
 )
 
 // ── helpers ─────────────────────────────────────────────────────────────
@@ -110,10 +114,8 @@ func isRunning() bool {
 }
 
 func getSyncthingURL() string {
-	// return cached value if available (only re-read from config when syncthing starts)
-	if cachedSyncthingURL != "" {
-		return cachedSyncthingURL
-	}
+	// config.xml is tiny and may change between reads (port/TLS toggled in the
+	// Syncthing UI), so read it fresh each time rather than caching a stale value.
 	return readSyncthingURLFromConfig()
 }
 
@@ -150,10 +152,6 @@ func readSyncthingURLFromConfig() string {
 		protocol = "https"
 	}
 	return fmt.Sprintf("%s://%s/", protocol, addr)
-}
-
-func refreshSyncthingURL() {
-	cachedSyncthingURL = readSyncthingURLFromConfig()
 }
 
 // ── TLS ─────────────────────────────────────────────────────────────────
@@ -202,35 +200,73 @@ func loadOrGenerateTLS() (certFile, keyFile string, err error) {
 
 // ── auth ────────────────────────────────────────────────────────────────
 
-func loadOrGenerateAuthCredentials() (string, string) {
-	cfgFile := filepath.Join(syncthingDir, ".auth_config")
+func authConfigPath() string {
+	return filepath.Join(syncthingDir, ".auth_config")
+}
+
+// hashPassword produces a bcrypt hash (same scheme as `caddy hash-password`).
+func hashPassword(plain string) (string, error) {
+	h, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(h), nil
+}
+
+// looksHashed reports whether v is already a bcrypt hash rather than plaintext.
+func looksHashed(v string) bool {
+	return strings.HasPrefix(v, "$2a$") || strings.HasPrefix(v, "$2b$") || strings.HasPrefix(v, "$2y$")
+}
+
+func saveAuthConfig() {
+	_ = os.WriteFile(authConfigPath(),
+		[]byte("username="+authUser+"\npassword="+authPassHash+"\n"), 0600)
+}
+
+func loadOrGenerateAuthCredentials() {
+	cfgFile := authConfigPath()
 
 	// try reading existing config
 	if data, err := os.ReadFile(cfgFile); err == nil {
+		storedPass := ""
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "username=") {
 				authUser = strings.TrimPrefix(line, "username=")
 			} else if strings.HasPrefix(line, "password=") {
-				authPass = strings.TrimPrefix(line, "password=")
+				storedPass = strings.TrimPrefix(line, "password=")
 			}
 		}
-		if authUser != "" && authPass != "" {
-			return authUser, authPass
+		if authUser != "" && storedPass != "" {
+			if looksHashed(storedPass) {
+				authPassHash = storedPass
+			} else {
+				// migrate legacy plaintext password to a bcrypt hash on disk
+				if h, err := hashPassword(storedPass); err == nil {
+					authPassHash = h
+					saveAuthConfig()
+				}
+			}
+			if authPassHash != "" {
+				return
+			}
 		}
 	}
 
 	// default credentials for first run
 	authUser = "admin"
-	authPass = "admin"
-	_ = os.WriteFile(cfgFile, []byte("username="+authUser+"\npassword="+authPass+"\n"), 0600)
-	return authUser, authPass
+	if h, err := hashPassword("admin"); err == nil {
+		authPassHash = h
+	}
+	saveAuthConfig()
 }
 
 func authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		user, pass, ok := c.Request.BasicAuth()
-		if !ok || user != authUser || pass != authPass {
+		userOK := subtle.ConstantTimeCompare([]byte(user), []byte(authUser)) == 1
+		passOK := bcrypt.CompareHashAndPassword([]byte(authPassHash), []byte(pass)) == nil
+		if !ok || !userOK || !passOK {
 			c.Header("WWW-Authenticate", `Basic realm="syncthing4root"`)
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
@@ -275,11 +311,27 @@ func handleStatus(c *gin.Context) {
 		resp["pid"] = nil
 	}
 	resp["url"] = getSyncthingURL()
-		resp["username"] = authUser
+	resp["username"] = authUser
 	c.JSON(http.StatusOK, resp)
 }
 
+// userStorageHome mirrors service.sh: pick the first /storage/emulated/* user,
+// falling back to /storage/emulated/0. Used only for the `~` path.
+func userStorageHome() string {
+	if entries, err := os.ReadDir("/storage/emulated"); err == nil {
+		for _, e := range entries {
+			return filepath.Join("/storage/emulated", e.Name())
+		}
+	}
+	return "/storage/emulated/0"
+}
+
 func handleStart(c *gin.Context) {
+	// serialize with stop/update and other starts so a double-tap can't launch
+	// two instances racing for the Syncthing DB lock.
+	startMu.Lock()
+	defer startMu.Unlock()
+
 	if isRunning() {
 		c.JSON(http.StatusConflict, gin.H{"error": "Syncthing is already running"})
 		return
@@ -298,18 +350,25 @@ func handleStart(c *gin.Context) {
 	cmd := exec.Command(syncthingBin, "serve", "--home="+syncthingHome, "--no-browser")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = append(os.Environ(), "HOME=/storage/emulated/0")
+	cmd.Env = append(os.Environ(), "HOME="+userStorageHome())
 
 	if err := cmd.Start(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-		// save PID to lock file
-	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", cmd.Process.Pid)), 0644)
-	c.JSON(http.StatusOK, gin.H{"message": "Syncthing started", "pid": cmd.Process.Pid})
+	pid := cmd.Process.Pid
+	// reap the child when it exits so it never lingers as a <defunct> zombie
+	// (the web server is a long-lived parent).
+	go func() { _ = cmd.Wait() }()
+	// save PID to lock file
+	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", pid)), 0644)
+	c.JSON(http.StatusOK, gin.H{"message": "Syncthing started", "pid": pid})
 }
 
 func handleStop(c *gin.Context) {
+	startMu.Lock()
+	defer startMu.Unlock()
+
 	pid, err := getSyncthingPID()
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "Syncthing is not running"})
@@ -325,9 +384,8 @@ func handleStop(c *gin.Context) {
 		exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
 	}
 
-	// clean up pid file and URL cache
+	// clean up pid file
 	os.Remove(pidFile)
-	cachedSyncthingURL = ""
 	c.JSON(http.StatusOK, gin.H{"message": "Syncthing stopped"})
 }
 
@@ -386,14 +444,18 @@ func handleChangePassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 4 characters"})
 		return
 	}
-	if req.OldPassword != authPass {
+	if bcrypt.CompareHashAndPassword([]byte(authPassHash), []byte(req.OldPassword)) != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "current password is incorrect"})
 		return
 	}
 
-	authPass = req.NewPassword
-	cfgFile := filepath.Join(syncthingDir, ".auth_config")
-	_ = os.WriteFile(cfgFile, []byte("username="+authUser+"\npassword="+authPass+"\n"), 0600)
+	newHash, err := hashPassword(req.NewPassword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+		return
+	}
+	authPassHash = newHash
+	saveAuthConfig()
 	c.JSON(http.StatusOK, gin.H{"message": "password updated"})
 }
 
@@ -410,18 +472,20 @@ func handleChangeUsername(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username cannot be empty"})
 		return
 	}
-	if req.Password != authPass {
+	if bcrypt.CompareHashAndPassword([]byte(authPassHash), []byte(req.Password)) != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "password is incorrect"})
 		return
 	}
 
 	authUser = req.NewUsername
-	cfgFile := filepath.Join(syncthingDir, ".auth_config")
-	_ = os.WriteFile(cfgFile, []byte("username="+authUser+"\npassword="+authPass+"\n"), 0600)
+	saveAuthConfig()
 	c.JSON(http.StatusOK, gin.H{"message": "username updated"})
 }
 
 func handleUpdate(c *gin.Context) {
+	startMu.Lock()
+	defer startMu.Unlock()
+
 	updateScript := filepath.Join(moduleDir, "update.sh")
 	if _, err := os.Stat(updateScript); os.IsNotExist(err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update.sh not found"})
@@ -437,12 +501,19 @@ func handleUpdate(c *gin.Context) {
 			exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
 		}
 		os.Remove(pidFile)
-		cachedSyncthingURL = ""
 	}
 
-	cmd := exec.Command("sh", updateScript, moduleDir)
+	// bound the download so a stalled network can't hang the request forever
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", updateScript, moduleDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			c.JSON(http.StatusGatewayTimeout, gin.H{"error": "update timed out"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": string(output)})
 		return
 	}
@@ -483,7 +554,7 @@ func main() {
 	autostartFlag = filepath.Join(syncthingDir, ".autostart_disabled")
 	pidFile = filepath.Join(syncthingDir, "syncthing.pid")
 
-	authUser, authPass = loadOrGenerateAuthCredentials()
+	loadOrGenerateAuthCredentials()
 
 	gin.DefaultWriter = io.Discard
 	gin.SetMode(gin.ReleaseMode)
@@ -492,7 +563,7 @@ func main() {
 	// global auth — browser pops login dialog for every page
 	r.Use(authMiddleware())
 
-	// redirect / → /ui/
+	// redirect / -> /ui/
 	r.GET("/", func(c *gin.Context) {
 		c.Redirect(http.StatusMovedPermanently, "/ui/")
 	})
@@ -522,23 +593,32 @@ func main() {
 		certFile, keyFile, err := loadOrGenerateTLS()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "TLS setup failed (%v), falling back to HTTP\n", err)
-			fmt.Printf("syncthing4root web server → http://%s/ui/\n→ Login: %s / %s\n", addr, authUser, authPass)
-			if err := r.Run(addr); err != nil {
-				fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-				os.Exit(1)
-			}
+			startServer(r, "http", addr, "", "")
 			return
 		}
-		fmt.Printf("syncthing4root web server → https://%s/ui/\n→ Login: %s / %s\n", addr, authUser, authPass)
-		if err := r.RunTLS(addr, certFile, keyFile); err != nil {
-			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-			os.Exit(1)
-		}
+		startServer(r, "https", addr, certFile, keyFile)
 	} else {
-		fmt.Printf("syncthing4root web server → http://%s/ui/\n→ Login: %s / %s\n", addr, authUser, authPass)
-		if err := r.Run(addr); err != nil {
-			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-			os.Exit(1)
-		}
+		startServer(r, "http", addr, "", "")
+	}
+}
+
+// startServer records the actual scheme for action.sh (so it never assumes
+// https when we fell back to http) and runs the server.
+func startServer(r *gin.Engine, scheme, addr, certFile, keyFile string) {
+	uiURL := fmt.Sprintf("%s://%s/ui/", scheme, addr)
+	// persist the real URL so action.sh opens the correct scheme
+	_ = os.WriteFile(filepath.Join(syncthingDir, ".webui_url"), []byte(uiURL+"\n"), 0644)
+
+	fmt.Printf("syncthing4root web server -> %s\n-> Login user: %s (password unchanged; default is 'admin' on first run)\n", uiURL, authUser)
+
+	var err error
+	if scheme == "https" {
+		err = r.RunTLS(addr, certFile, keyFile)
+	} else {
+		err = r.Run(addr)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
 }

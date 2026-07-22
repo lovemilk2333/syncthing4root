@@ -37,7 +37,7 @@
 
 - **数据目录**: `/data/adb/modules/io.github.lovemilk2333.root_module.syncthing4root/syncthing/home/` (内含 `config.xml` 等)
 - **自启动服务**: `/data/adb/service.d/syncthing_service.sh`
-- **鉴权配置**: `/data/adb/modules/io.github.lovemilk2333.root_module.syncthing4root/syncthing/.auth_config` (格式: `username=...` / `password=...`)
+- **鉴权配置**: `/data/adb/modules/io.github.lovemilk2333.root_module.syncthing4root/syncthing/.auth_config` (格式: `username=...` / `password=<bcrypt 哈希>`)
 - **TLS 证书**: `/data/adb/modules/io.github.lovemilk2333.root_module.syncthing4root/syncthing/tls.{crt,key}`
 
 ### API 接口
@@ -101,7 +101,12 @@ syncthing4root_webserver --port <端口> --module-dir <模块目录> [--no-tls]
 
 - **TLS**: 首次启动时自动生成 4096 位 RSA 自签名证书 (有效期 10 年), 使用 HTTPS 加密通信
 - **鉴权**: HTTP Basic Auth, 默认用户名 `admin`, 默认密码 `admin` (首次运行写入 `.auth_config`)
+- **密码存储**: `.auth_config` 中的密码以 bcrypt 哈希存储 (与 `caddy hash-password` 同算法), 不保存明文
 - **自启动开关**: 禁用自启动本质是在数据目录创建 `.autostart_disabled` 标志文件, 开机服务脚本检测到该文件后跳过启动
+
+> [!WARNING]
+> **版本回退提示**: 自本版本起, `.auth_config` 的密码字段由明文改为 bcrypt 哈希. 升级后旧的明文密码会在首次启动时被自动改写为哈希, 此过程**不可逆**.
+> 若之后回退到旧版本 (旧版按明文逐字比较密码), 将无法用原密码登录. 回退时请手动把 `.auth_config` 的 `password=` 改回明文, 或删除该文件让模块重新生成默认 `admin` / `admin`.
 
 ## 打包
 

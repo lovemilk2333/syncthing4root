@@ -293,9 +293,10 @@ wait_for_data
 # wait for filesystem and unlock data
 sleep 30
 
-# start web server (management UI)
+# start web server (management UI) — skip if already running (module service.sh
+# may have started it; on Magisk both this and service.sh execute at boot)
 web_bin="${module_dir}/syncthing4root_webserver"
-if [ -f "\$web_bin" ]; then
+if [ -f "\$web_bin" ] && ! pgrep -f syncthing4root_webserver >/dev/null 2>&1; then
     \$web_bin --port 48344 --module-dir "${module_dir}" &
 fi
 
@@ -309,7 +310,8 @@ syncthing_bin="${runtime_dir}/syncthing"
 syncthing_home="${runtime_dir}/home"
 log_file="${runtime_dir}/service.log"
 
-if [ -f "\$syncthing_bin" ]; then
+# don't launch a second syncthing — it would fail on the DB lock
+if [ -f "\$syncthing_bin" ] && ! pgrep -f "\$syncthing_bin" >/dev/null 2>&1; then
     mkdir -p "\${syncthing_home}"
     user_storage="\$(ls -d /storage/emulated/* 2>/dev/null | head -1)"
     [ -z "\$user_storage" ] && user_storage="/storage/emulated/0"
@@ -339,9 +341,10 @@ done
 
 wait_for_data
 
-# start web server (management UI)
+# start web server (management UI) — skip if already running (service.d copy
+# may have started it; on Magisk both this and service.d execute at boot)
 web_bin="${module_dir}/syncthing4root_webserver"
-if [ -f "\$web_bin" ]; then
+if [ -f "\$web_bin" ] && ! pgrep -f syncthing4root_webserver >/dev/null 2>&1; then
     \$web_bin --port 48344 --module-dir "${module_dir}" &
 fi
 
@@ -356,7 +359,8 @@ syncthing_bin="${runtime_dir}/syncthing"
 syncthing_home="${runtime_dir}/home"
 log_file="${runtime_dir}/service.log"
 
-if [ -f "\$syncthing_bin" ]; then
+# don't launch a second syncthing — it would fail on the DB lock
+if [ -f "\$syncthing_bin" ] && ! pgrep -f "\$syncthing_bin" >/dev/null 2>&1; then
     mkdir -p "\${syncthing_home}"
     user_storage="\$(ls -d /storage/emulated/* 2>/dev/null | head -1)"
     [ -z "\$user_storage" ] && user_storage="/storage/emulated/0"

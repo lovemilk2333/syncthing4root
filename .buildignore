@@ -7,3 +7,4 @@ continue
 .git/*
 web/*
 build/*
+.claude/*
