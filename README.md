@@ -57,6 +57,9 @@
 | POST | `/api/update` | 更新 Syncthing 到最新版 |
 | POST | `/api/change-password` | 修改登录密码 (需旧密码验证) |
 | POST | `/api/change-username` | 修改登录用户名 (需密码验证) |
+| GET  | `/api/netpolicy` | 读取网络策略配置 + 当前网络状态 |
+| POST | `/api/netpolicy` | 保存网络策略配置 (热更新, 立即重新评估) |
+| GET  | `/api/netpolicy/scan` | 扫描当前传输类型 / WiFi SSID (供白名单填充) |
 
 ### Web 服务器参数
 
@@ -67,6 +70,24 @@ syncthing4root_webserver --port <端口> --module-dir <模块目录> [--no-tls]
 - `--port`: 监听端口 (默认 `48344`)
 - `--module-dir`: 模块路径 (默认根据自身路径推算)
 - `--no-tls`: 禁用 TLS (使用 HTTP 明文)
+
+### 网络策略 (按网络状态自动启停)
+
+管理界面的 **📶 Network Policy** 卡片可根据当前网络状态自动启动 / 停止 Syncthing. 默认关闭, 需手动开启.
+
+- **总开关**: 启用后由策略接管启停; 关闭时为手动模式 (状态栏显示 `auto` / `manual` 徽标).
+- **条件组合**: 可选 `AND` (所有已启用条件都满足才运行) 或 `OR` (任一满足即运行).
+- **检查间隔**: 轮询周期 (默认 30 秒, 范围 5–3600).
+- **WiFi 白名单**: 仅当连接到白名单内 SSID 的 WiFi 时判定为"应运行". 支持"📡 扫描当前 SSID"一键填入.
+- **Stop on cellular**: 使用移动数据 (蜂窝网络) 时判定为"应停止".
+- **Reachability probe**: `Ping` (ICMP) 或 `TCPing` 探测指定 target 可达才判定为"应运行".
+  - `timeout`: 单次探测超时 (ms).
+  - `up threshold` / `down threshold`: 连续成功 / 失败次数阈值 (滞回, 避免网络抖动导致频繁启停).
+
+> [!NOTE]
+> - 策略开启时会覆盖手动 Start / Stop 操作 (下一个检查周期按策略调和), 状态栏 `auto` 徽标即表示处于自动模式.
+> - 网络检测依赖 Android 系统命令 (`ip route`, `cmd wifi status` / `dumpsys wifi`, `ping`), 需 root. 不同 ROM 输出格式可能不同, SSID 识别失败时白名单条件会判定为不满足.
+> - 配置持久化于 `syncthing/.netpolicy.json`.
 
 ## 配置迁移 (从 Syncthing Android App)
 

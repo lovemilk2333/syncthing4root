@@ -77,6 +77,41 @@ header .subtitle { font-size: 13px; color: var(--text2); }
 }
 .toast.show { opacity: 1; }
 footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--text2); }
+
+.card-head {
+  display: flex; justify-content: space-between; align-items: center; cursor: pointer;
+}
+.card-title { font-size: 15px; font-weight: 600; }
+.card-hint { font-size: 12px; color: var(--text2); }
+.badge {
+  display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: var(--surface2); color: var(--text2); vertical-align: middle;
+}
+.badge.on   { background: rgba(66,165,245,.2); color: var(--blue); }
+.badge.run  { background: rgba(76,175,80,.2); color: var(--green); }
+.badge.stop { background: rgba(239,83,80,.2); color: var(--red); }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px; }
+.input, .select {
+  width: 100%; padding: 10px; border: none; border-radius: 8px;
+  background: var(--surface2); color: var(--text); font-size: 14px;
+}
+.row2 { display: flex; gap: 10px; }
+.row2 > * { flex: 1; }
+.subsec {
+  border-top: 1px solid var(--surface2); margin-top: 14px; padding-top: 14px;
+}
+.subsec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  background: var(--surface2); padding: 5px 10px; border-radius: 14px;
+}
+.chip button {
+  background: none; border: none; color: var(--red); cursor: pointer; font-size: 14px; line-height: 1;
+}
+.muted { font-size: 12px; color: var(--text2); }
+.collapsed { display: none; }
 </style>
 </head>
 <body>
@@ -91,8 +126,10 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
     <div class="status-row">
       <span class="dot gray" id="dot"></span>
       <span id="statusText">Checking…</span>
+      <span class="badge" id="modeBadge" style="margin-left:auto">manual</span>
     </div>
     <div class="status-detail" id="statusDetail"></div>
+    <div class="status-detail" id="netDetail"></div>
   </div>
 
   <div class="card">
@@ -109,6 +146,109 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
       <input type="checkbox" id="autostartToggle" onchange="toggleAutostart()">
       <span class="slider"></span>
     </label>
+  </div>
+
+  <div class="card">
+    <div class="card-head" onclick="toggleNetPolicy()">
+      <div>
+        <span class="card-title">📶 Network Policy</span>
+        <span class="badge" id="npBadge">off</span>
+      </div>
+      <span class="card-hint" id="npToggleHint">show</span>
+    </div>
+
+    <div id="npBody" class="collapsed" style="margin-top:14px">
+      <div class="muted" id="npState" style="margin-bottom:14px"></div>
+
+      <div class="setting-card" style="margin-bottom:12px">
+        <span class="setting-label">Enable auto start/stop</span>
+        <label class="toggle">
+          <input type="checkbox" id="npEnabled"><span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="field">
+        <label>Combine conditions</label>
+        <select class="select" id="npCombine">
+          <option value="AND">AND — all enabled conditions must pass</option>
+          <option value="OR">OR — any enabled condition passes</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Check interval (seconds)</label>
+        <input class="input" id="npInterval" type="number" min="5" max="3600" value="30">
+      </div>
+
+      <!-- WiFi whitelist -->
+      <div class="subsec">
+        <div class="subsec-head">
+          <span class="setting-label">WiFi whitelist</span>
+          <label class="toggle">
+            <input type="checkbox" id="npWifiEnabled"><span class="slider"></span>
+          </label>
+        </div>
+        <div class="chips" id="npWifiChips"></div>
+        <div class="row2">
+          <input class="input" id="npWifiInput" placeholder="SSID name">
+          <button class="btn btn-outline" style="flex:0 0 auto;padding:10px 14px" onclick="addWifi()">Add</button>
+        </div>
+        <button class="btn btn-outline" style="margin-top:8px" onclick="scanWifi()">📡 Scan current SSID</button>
+      </div>
+
+      <!-- Cellular -->
+      <div class="subsec">
+        <div class="subsec-head">
+          <span class="setting-label">Stop on cellular</span>
+          <label class="toggle">
+            <input type="checkbox" id="npCellEnabled"><span class="slider"></span>
+          </label>
+        </div>
+        <div class="muted">When on mobile data, Syncthing is kept stopped.</div>
+      </div>
+
+      <!-- Probe -->
+      <div class="subsec">
+        <div class="subsec-head">
+          <span class="setting-label">Reachability probe</span>
+          <label class="toggle">
+            <input type="checkbox" id="npProbeEnabled"><span class="slider"></span>
+          </label>
+        </div>
+        <div class="row2">
+          <div class="field" style="margin-bottom:0">
+            <label>Type</label>
+            <select class="select" id="npProbeType" onchange="onProbeTypeChange()">
+              <option value="ping">Ping (ICMP)</option>
+              <option value="tcp">TCPing</option>
+            </select>
+          </div>
+          <div class="field" style="margin-bottom:0" id="npPortField">
+            <label>Port</label>
+            <input class="input" id="npProbePort" type="number" min="1" max="65535" value="22">
+          </div>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <label>Target (host or IP)</label>
+          <input class="input" id="npProbeTarget" placeholder="192.168.1.1">
+        </div>
+        <div class="row2">
+          <div class="field" style="margin-bottom:0">
+            <label>Timeout (ms)</label>
+            <input class="input" id="npProbeTimeout" type="number" min="200" max="60000" value="2000">
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>Up threshold</label>
+            <input class="input" id="npProbeUp" type="number" min="1" value="2">
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>Down threshold</label>
+            <input class="input" id="npProbeDown" type="number" min="1" value="3">
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" style="margin-top:16px" id="npSaveBtn" onclick="saveNetPolicy()">Save Policy</button>
+    </div>
   </div>
 
   <div class="card">
@@ -195,6 +335,149 @@ async function refreshStatus() {
 async function refreshAutostart() {
   var data = await api('/api/autostart');
   document.getElementById('autostartToggle').checked = data.autostart;
+}
+
+// ── Network policy ────────────────────────────────────────────────────────
+var npLoaded = false;
+
+function setModeBadge(enabled) {
+  var b = document.getElementById('modeBadge');
+  if (enabled) { b.textContent = 'auto'; b.className = 'badge on'; }
+  else { b.textContent = 'manual'; b.className = 'badge'; }
+}
+
+function renderChips() {
+  var box = document.getElementById('npWifiChips');
+  box.innerHTML = '';
+  npWifiList.forEach(function(ssid, i) {
+    var chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = ssid;
+    var x = document.createElement('button');
+    x.textContent = '×';
+    x.onclick = function(){ npWifiList.splice(i,1); renderChips(); };
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
+  if (npWifiList.length === 0) {
+    box.innerHTML = '<span class="muted">No SSID added</span>';
+  }
+}
+
+var npWifiList = [];
+
+function addWifi() {
+  var el = document.getElementById('npWifiInput');
+  var v = el.value.trim();
+  if (!v) return;
+  if (npWifiList.indexOf(v) === -1) npWifiList.push(v);
+  el.value = '';
+  renderChips();
+}
+
+async function scanWifi() {
+  var d = await api('/api/netpolicy/scan');
+  if (d.transport !== 'wifi' || !d.ssid) {
+    toast('❌ Not on WiFi or SSID unavailable (transport: ' + d.transport + ')');
+    return;
+  }
+  if (npWifiList.indexOf(d.ssid) === -1) npWifiList.push(d.ssid);
+  renderChips();
+  toast('✅ Added "' + d.ssid + '"');
+}
+
+function onProbeTypeChange() {
+  var tcp = document.getElementById('npProbeType').value === 'tcp';
+  document.getElementById('npPortField').style.display = tcp ? 'block' : 'none';
+}
+
+function applyNetConfig(cfg) {
+  document.getElementById('npEnabled').checked = cfg.enabled;
+  document.getElementById('npCombine').value = cfg.combine;
+  document.getElementById('npInterval').value = cfg.interval_sec;
+  document.getElementById('npWifiEnabled').checked = cfg.wifi.enabled;
+  npWifiList = (cfg.wifi.whitelist || []).slice();
+  renderChips();
+  document.getElementById('npCellEnabled').checked = cfg.cellular.enabled;
+  document.getElementById('npProbeEnabled').checked = cfg.probe.enabled;
+  document.getElementById('npProbeType').value = cfg.probe.type;
+  document.getElementById('npProbePort').value = cfg.probe.port;
+  document.getElementById('npProbeTarget').value = cfg.probe.target;
+  document.getElementById('npProbeTimeout').value = cfg.probe.timeout_ms;
+  document.getElementById('npProbeUp').value = cfg.probe.up_threshold;
+  document.getElementById('npProbeDown').value = cfg.probe.down_threshold;
+  onProbeTypeChange();
+}
+
+function renderNetState(cfg, st) {
+  setModeBadge(cfg.enabled);
+  var badge = document.getElementById('npBadge');
+  if (cfg.enabled) { badge.textContent = 'on'; badge.className = 'badge on'; }
+  else { badge.textContent = 'off'; badge.className = 'badge'; }
+
+  var net = document.getElementById('netDetail');
+  var parts = ['Net: <code>' + st.transport + '</code>'];
+  if (st.ssid) parts.push('SSID: <code>' + st.ssid + '</code>');
+  net.innerHTML = parts.join(' &middot; ');
+
+  var s = document.getElementById('npState');
+  if (cfg.enabled) {
+    s.innerHTML = 'Decision: <b style="color:' + (st.should_run ? 'var(--green)' : 'var(--red)') + '">'
+      + (st.should_run ? 'should run' : 'should stop') + '</b><br>'
+      + '<span class="muted">' + st.explanation + '</span>';
+  } else {
+    s.innerHTML = '<span class="muted">Policy disabled — manual control.</span>';
+  }
+}
+
+async function refreshNetPolicy() {
+  var d = await api('/api/netpolicy');
+  if (!d || !d.config) return;
+  // don't clobber the form while the user is editing (only load once)
+  if (!npLoaded) { applyNetConfig(d.config); npLoaded = true; }
+  renderNetState(d.config, d.state);
+}
+
+function toggleNetPolicy() {
+  var body = document.getElementById('npBody');
+  var hint = document.getElementById('npToggleHint');
+  var show = body.classList.contains('collapsed');
+  body.classList.toggle('collapsed', !show);
+  hint.textContent = show ? 'hide' : 'show';
+}
+
+async function saveNetPolicy() {
+  var cfg = {
+    enabled: document.getElementById('npEnabled').checked,
+    combine: document.getElementById('npCombine').value,
+    interval_sec: parseInt(document.getElementById('npInterval').value, 10) || 30,
+    wifi: {
+      enabled: document.getElementById('npWifiEnabled').checked,
+      whitelist: npWifiList.slice(),
+    },
+    cellular: { enabled: document.getElementById('npCellEnabled').checked },
+    probe: {
+      enabled: document.getElementById('npProbeEnabled').checked,
+      type: document.getElementById('npProbeType').value,
+      target: document.getElementById('npProbeTarget').value.trim(),
+      port: parseInt(document.getElementById('npProbePort').value, 10) || 22,
+      timeout_ms: parseInt(document.getElementById('npProbeTimeout').value, 10) || 2000,
+      up_threshold: parseInt(document.getElementById('npProbeUp').value, 10) || 2,
+      down_threshold: parseInt(document.getElementById('npProbeDown').value, 10) || 3,
+    },
+  };
+  var btn = document.getElementById('npSaveBtn');
+  setLoading(btn, true);
+  var d = await api('/api/netpolicy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  });
+  setLoading(btn, false);
+  if (d.error) { toast('❌ ' + d.error); return; }
+  applyNetConfig(d.config);
+  toast('✅ Network policy saved');
+  refreshNetPolicy(); // pulls fresh config + live state
 }
 
 async function startSyncthing() {
@@ -296,7 +579,9 @@ async function updateSyncthing() {
 
 refreshStatus();
 refreshAutostart();
+refreshNetPolicy();
 setInterval(refreshStatus, 10000);
+setInterval(refreshNetPolicy, 10000);
 </script>
 </body>
 </html>

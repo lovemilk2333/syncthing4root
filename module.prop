@@ -1,6 +1,6 @@
 id=io.github.lovemilk2333.root_module.syncthing4root
 name=run Syncthing as a magisk module
-version=v20260716-beta2
-versionCode=202607151002
+version=v20260716-beta3
+versionCode=202607151003
 author=lovemilk2333
 description=run Syncthing with root user that avoid to be killed by Android System

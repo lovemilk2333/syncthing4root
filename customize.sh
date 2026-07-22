@@ -64,6 +64,8 @@ if [ -d "$runtime_dir/home" ]; then
   [ -f "$runtime_dir/.auth_config" ] && cp "$runtime_dir/.auth_config" "$syncthing_data_dir/"
   # preserve autostart toggle state
   [ -f "$runtime_dir/.autostart_disabled" ] && cp "$runtime_dir/.autostart_disabled" "$syncthing_data_dir/"
+  # preserve network policy config
+  [ -f "$runtime_dir/.netpolicy.json" ] && cp "$runtime_dir/.netpolicy.json" "$syncthing_data_dir/"
 else
   mkdir -p "$syncthing_data_dir"
 fi

@@ -326,24 +326,33 @@ func userStorageHome() string {
 	return "/storage/emulated/0"
 }
 
-func handleStart(c *gin.Context) {
-	// serialize with stop/update and other starts so a double-tap can't launch
-	// two instances racing for the Syncthing DB lock.
+// errAlreadyRunning / errNotRunning let callers distinguish no-op cases.
+var (
+	errAlreadyRunning = fmt.Errorf("syncthing is already running")
+	errNotRunning     = fmt.Errorf("syncthing is not running")
+	errBinNotFound    = fmt.Errorf("syncthing binary not found")
+)
+
+// startSyncthing launches Syncthing if not already running and returns its PID.
+// Shared by the HTTP handler and the network-policy monitor; acquires startMu
+// so a double-tap or a policy tick can't race the DB lock.
+func startSyncthing() (int, error) {
 	startMu.Lock()
 	defer startMu.Unlock()
+	return startSyncthingLocked()
+}
 
+// startSyncthingLocked assumes startMu is already held.
+func startSyncthingLocked() (int, error) {
 	if isRunning() {
-		c.JSON(http.StatusConflict, gin.H{"error": "Syncthing is already running"})
-		return
+		return 0, errAlreadyRunning
 	}
 	if _, err := os.Stat(syncthingBin); os.IsNotExist(err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Syncthing binary not found"})
-		return
+		return 0, errBinNotFound
 	}
 	logFile, err := os.OpenFile(syncthingLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Cannot open log: " + err.Error()})
-		return
+		return 0, fmt.Errorf("cannot open log: %w", err)
 	}
 	defer logFile.Close()
 
@@ -353,8 +362,7 @@ func handleStart(c *gin.Context) {
 	cmd.Env = append(os.Environ(), "HOME="+userStorageHome())
 
 	if err := cmd.Start(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return 0, err
 	}
 	pid := cmd.Process.Pid
 	// reap the child when it exits so it never lingers as a <defunct> zombie
@@ -362,17 +370,22 @@ func handleStart(c *gin.Context) {
 	go func() { _ = cmd.Wait() }()
 	// save PID to lock file
 	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", pid)), 0644)
-	c.JSON(http.StatusOK, gin.H{"message": "Syncthing started", "pid": pid})
+	return pid, nil
 }
 
-func handleStop(c *gin.Context) {
+// stopSyncthing gracefully stops Syncthing (SIGINT, then SIGKILL fallback).
+// Shared by the HTTP handler and the monitor; acquires startMu.
+func stopSyncthing() error {
 	startMu.Lock()
 	defer startMu.Unlock()
+	return stopSyncthingLocked()
+}
 
+// stopSyncthingLocked assumes startMu is already held.
+func stopSyncthingLocked() error {
 	pid, err := getSyncthingPID()
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "Syncthing is not running"})
-		return
+		return errNotRunning
 	}
 
 	// graceful shutdown — SIGINT lets Syncthing flush DB and notify peers
@@ -386,6 +399,28 @@ func handleStop(c *gin.Context) {
 
 	// clean up pid file
 	os.Remove(pidFile)
+	return nil
+}
+
+func handleStart(c *gin.Context) {
+	pid, err := startSyncthing()
+	switch {
+	case err == errAlreadyRunning:
+		c.JSON(http.StatusConflict, gin.H{"error": "Syncthing is already running"})
+	case err == errBinNotFound:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Syncthing binary not found"})
+	case err != nil:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	default:
+		c.JSON(http.StatusOK, gin.H{"message": "Syncthing started", "pid": pid})
+	}
+}
+
+func handleStop(c *gin.Context) {
+	if err := stopSyncthing(); err == errNotRunning {
+		c.JSON(http.StatusConflict, gin.H{"error": "Syncthing is not running"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "Syncthing stopped"})
 }
 
@@ -555,6 +590,8 @@ func main() {
 	pidFile = filepath.Join(syncthingDir, "syncthing.pid")
 
 	loadOrGenerateAuthCredentials()
+	loadNetPolicy()
+	startNetPolicyMonitor()
 
 	gin.DefaultWriter = io.Discard
 	gin.SetMode(gin.ReleaseMode)
@@ -585,6 +622,9 @@ func main() {
 		api.POST("/change-password", handleChangePassword)
 		api.POST("/change-username", handleChangeUsername)
 		api.POST("/update", handleUpdate)
+		api.GET("/netpolicy", handleNetPolicyGet)
+		api.POST("/netpolicy", handleNetPolicySave)
+		api.GET("/netpolicy/scan", handleNetPolicyScan)
 	}
 
 	addr := "127.0.0.1:" + port
