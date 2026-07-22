@@ -76,19 +76,37 @@ syncthing4root_webserver --port <端口> --module-dir <模块目录> [--no-tls]
 管理界面的 **📶 Network Policy** 卡片可根据当前网络状态自动启动 / 停止 Syncthing. 默认关闭, 需手动开启.
 
 - **总开关**: 启用后由策略接管启停; 关闭时为手动模式 (状态栏显示 `auto` / `manual` 徽标).
-- **条件组合**: 可选 `AND` (所有已启用条件都满足才运行) 或 `OR` (任一满足即运行).
 - **检查间隔**: 轮询周期 (默认 30 秒, 范围 5–3600).
-- **WiFi 白名单**: 仅当连接到白名单内 SSID 的 WiFi 时判定为"应运行". 支持"📡 扫描当前 SSID"一键填入.
-- **Stop on cellular**: 使用移动数据 (蜂窝网络) 时判定为"应停止".
-- **Follow battery saver**: 系统进入省电模式 (Battery Saver) 时判定为"应停止".
-- **Reachability probe**: `Ping` (ICMP) 或 `TCPing` 探测指定 target 可达才判定为"应运行".
-  - `timeout`: 单次探测超时 (ms).
-  - `up threshold` / `down threshold`: 连续成功 / 失败次数阈值 (滞回, 避免网络抖动导致频繁启停).
+
+**运行条件 (布尔表达式)**: 用一个表达式描述"何时应运行 Syncthing", 支持 `AND` / `OR` / `NOT` 与括号任意嵌套.
+
+四个可用条件项 (term), 为 `true` 的含义:
+
+| term | true 时 | 配置面板 |
+|------|---------|---------|
+| `wifi` | 连接到白名单内 SSID 的 WiFi | WiFi 白名单 (支持"📡 扫描当前 SSID") |
+| `cellular` | 当前在蜂窝 (移动数据) 网络 | — |
+| `power` | 系统省电模式 (Battery Saver) 开启 | — |
+| `probe` | 探测目标可达 | Ping/TCPing + target + timeout + 上/下线阈值 (滞回) |
+
+示例:
+
+```
+wifi AND NOT cellular              # 在白名单 WiFi 且不在蜂窝时运行
+wifi AND (probe OR NOT power)      # 白名单 WiFi, 且 (探测通 或 非省电)
+NOT cellular AND NOT power         # 只要不在蜂窝且非省电就运行
+```
+
+- 语法: 关键字大小写不敏感; 也接受 `&&` / `||` / `!` 作为 `AND` / `OR` / `NOT` 的同义符.
+- **空表达式 = 恒运行** (无约束).
+- 某个 term 对应的下方面板**关闭**时, 该 term 恒为 `true` (在 `AND` 下为中性; 注意在 `NOT`/`OR` 下会影响结果).
+- 保存时后端会校验表达式语法与标识符, 非法则拒绝保存并提示错误.
+- 探测阈值 `up`/`down`: 连续成功/失败次数达到阈值才切换状态 (滞回, 避免网络抖动导致频繁启停).
 
 > [!NOTE]
 > - 策略开启时会覆盖手动 Start / Stop 操作 (下一个检查周期按策略调和), 状态栏 `auto` 徽标即表示处于自动模式.
-> - 网络 / 省电检测依赖 Android 系统命令 (`ip route`, `cmd wifi status` / `dumpsys wifi`, `ping`, `settings get global low_power` / `dumpsys power`), 需 root. 不同 ROM 输出格式可能不同, SSID 识别失败时白名单条件会判定为不满足.
-> - 配置持久化于 `syncthing/.netpolicy.json`.
+> - 网络 / 省电检测依赖 Android 系统命令 (`ip route`, `cmd wifi status` / `dumpsys wifi`, `ping`, `settings get global low_power` / `dumpsys power`), 需 root. 不同 ROM 输出格式可能不同, SSID 识别失败时 `wifi` 判定为 `false`.
+> - 配置持久化于 `syncthing/.netpolicy.json`; 旧版本 (beta3/4) 的 `combine` 配置会在首次加载时自动迁移为等价表达式.
 
 ## 配置迁移 (从 Syncthing Android App)
 

@@ -3,146 +3,155 @@ package main
 import "testing"
 
 func baseCfg() netPolicyConfig {
-	c := defaultNetPolicy()
-	return c
+	return defaultNetPolicy()
 }
 
-func TestEvaluatePolicy_NoConditions(t *testing.T) {
-	c := baseCfg()
-	run, _ := evaluatePolicy(c, "cellular", "", false, false)
-	if !run {
-		t.Fatal("no enabled condition should default to run=true")
+// evalWith is a test helper: compute terms then evaluate the expression.
+func evalWith(c netPolicyConfig, transport, ssid string, probeUp, powerSave bool) (bool, error) {
+	terms := termValues(c, transport, ssid, probeUp, powerSave)
+	run, _, err := evaluatePolicy(c, terms)
+	return run, err
+}
+
+func TestEvaluate_EmptyExpr(t *testing.T) {
+	c := baseCfg() // expr == "" → always run
+	run, err := evalWith(c, "cellular", "", false, false)
+	if err != nil || !run {
+		t.Fatalf("empty expr should always run (run=%v err=%v)", run, err)
 	}
 }
 
-func TestEvaluatePolicy_WifiWhitelist(t *testing.T) {
+func TestTermValues_DisabledIsTrue(t *testing.T) {
+	c := baseCfg() // all conditions disabled
+	terms := termValues(c, "cellular", "Cafe", false, true)
+	for _, k := range knownTerms {
+		if !terms[k] {
+			t.Errorf("disabled term %q should be true, got false", k)
+		}
+	}
+}
+
+func TestTermValues_Wifi(t *testing.T) {
 	c := baseCfg()
 	c.WiFi.Enabled = true
-	c.WiFi.Whitelist = []string{"Home", "Office"}
+	c.WiFi.Whitelist = []string{"Home"}
 
-	if run, _ := evaluatePolicy(c, "wifi", "Home", false, false); !run {
-		t.Error("whitelisted SSID on wifi should run")
+	if v := termValues(c, "wifi", "Home", false, false)["wifi"]; !v {
+		t.Error("whitelisted SSID on wifi → wifi term true")
 	}
-	if run, _ := evaluatePolicy(c, "wifi", "Cafe", false, false); run {
-		t.Error("non-whitelisted SSID should not run")
+	if v := termValues(c, "wifi", "Cafe", false, false)["wifi"]; v {
+		t.Error("non-whitelisted SSID → wifi term false")
 	}
-	if run, _ := evaluatePolicy(c, "cellular", "Home", false, false); run {
-		t.Error("wifi condition must be false when not on wifi")
+	if v := termValues(c, "cellular", "Home", false, false)["wifi"]; v {
+		t.Error("not on wifi → wifi term false")
 	}
 }
 
-func TestEvaluatePolicy_Cellular(t *testing.T) {
+func TestTermValues_Cellular(t *testing.T) {
 	c := baseCfg()
 	c.Cellular.Enabled = true
-
-	if run, _ := evaluatePolicy(c, "cellular", "", false, false); run {
-		t.Error("should stop on cellular")
+	if v := termValues(c, "cellular", "", false, false)["cellular"]; !v {
+		t.Error("on cellular → cellular term true")
 	}
-	if run, _ := evaluatePolicy(c, "wifi", "X", false, false); !run {
-		t.Error("should run when not on cellular")
-	}
-}
-
-func TestEvaluatePolicy_Probe(t *testing.T) {
-	c := baseCfg()
-	c.Probe.Enabled = true
-
-	if run, _ := evaluatePolicy(c, "wifi", "X", true, false); !run {
-		t.Error("probe up should run")
-	}
-	if run, _ := evaluatePolicy(c, "wifi", "X", false, false); run {
-		t.Error("probe down should stop")
+	if v := termValues(c, "wifi", "X", false, false)["cellular"]; v {
+		t.Error("not on cellular → cellular term false")
 	}
 }
 
-func TestEvaluatePolicy_Power(t *testing.T) {
+func TestTermValues_Power(t *testing.T) {
 	c := baseCfg()
 	c.Power.Enabled = true
-
-	if run, _ := evaluatePolicy(c, "wifi", "X", false, true); run {
-		t.Error("should stop when battery saver is on")
+	if v := termValues(c, "wifi", "X", false, true)["power"]; !v {
+		t.Error("battery saver on → power term true")
 	}
-	if run, _ := evaluatePolicy(c, "wifi", "X", false, false); !run {
-		t.Error("should run when battery saver is off")
-	}
-}
-
-func TestParsePowerSave(t *testing.T) {
-	if !parsePowerSaveFlag("1\n") {
-		t.Error("low_power=1 should be on")
-	}
-	if parsePowerSaveFlag("0\n") {
-		t.Error("low_power=0 should be off")
-	}
-	if !parseDumpsysPowerSave("  mSettingBatterySaverEnabled=true") {
-		t.Error("dumpsys battery-saver true not detected")
-	}
-	if parseDumpsysPowerSave("  mLowPowerModeEnabled=false") {
-		t.Error("dumpsys battery-saver false misread as on")
+	if v := termValues(c, "wifi", "X", false, false)["power"]; v {
+		t.Error("battery saver off → power term false")
 	}
 }
 
-func TestEvaluatePolicy_CombineAND(t *testing.T) {
+func TestEvaluate_ExpressionCombos(t *testing.T) {
 	c := baseCfg()
-	c.Combine = "AND"
 	c.WiFi.Enabled = true
 	c.WiFi.Whitelist = []string{"Home"}
+	c.Cellular.Enabled = true
 	c.Probe.Enabled = true
 
-	// wifi passes, probe fails → AND false
-	if run, _ := evaluatePolicy(c, "wifi", "Home", false, false); run {
-		t.Error("AND: one failing condition should stop")
+	// "run on whitelisted wifi, not on cellular, and probe up"
+	c.Expr = "wifi AND NOT cellular AND probe"
+	if run, _ := evalWith(c, "wifi", "Home", true, false); !run {
+		t.Error("all satisfied → run")
 	}
-	// both pass → true
-	if run, _ := evaluatePolicy(c, "wifi", "Home", true, false); !run {
-		t.Error("AND: all passing should run")
+	if run, _ := evalWith(c, "wifi", "Home", false, false); run {
+		t.Error("probe down → stop")
+	}
+	if run, _ := evalWith(c, "cellular", "Home", true, false); run {
+		t.Error("on cellular → stop")
+	}
+
+	// nested + OR
+	c.Expr = "wifi AND (probe OR NOT cellular)"
+	if run, _ := evalWith(c, "wifi", "Home", false, false); !run {
+		t.Error("wifi && (false || not-cellular=true) → run")
 	}
 }
 
-func TestEvaluatePolicy_CombineOR(t *testing.T) {
+func TestEvaluate_BrokenExprReturnsError(t *testing.T) {
 	c := baseCfg()
-	c.Combine = "OR"
-	c.WiFi.Enabled = true
-	c.WiFi.Whitelist = []string{"Home"}
-	c.Probe.Enabled = true
-
-	// wifi fails but probe up → OR true
-	if run, _ := evaluatePolicy(c, "cellular", "Home", true, false); !run {
-		t.Error("OR: one passing condition should run")
+	c.Expr = "wifi AND"
+	if _, err := evalWith(c, "wifi", "Home", true, false); err == nil {
+		t.Error("dangling AND should parse-error")
 	}
-	// both fail → false
-	if run, _ := evaluatePolicy(c, "cellular", "Cafe", false, false); run {
-		t.Error("OR: all failing should stop")
+}
+
+func TestMigrateLegacyExpr(t *testing.T) {
+	raw := []byte(`{"combine":"OR"}`)
+	c := baseCfg()
+	c.WiFi.Enabled = true
+	c.Cellular.Enabled = true
+	c.Power.Enabled = true
+	c.Probe.Enabled = true
+	got := migrateLegacyExpr(raw, c)
+	want := "wifi OR NOT cellular OR NOT power OR probe"
+	if got != want {
+		t.Errorf("migrate = %q, want %q", got, want)
+	}
+
+	// AND default, only wifi+probe
+	raw2 := []byte(`{"combine":"AND"}`)
+	c2 := baseCfg()
+	c2.WiFi.Enabled = true
+	c2.Probe.Enabled = true
+	if got := migrateLegacyExpr(raw2, c2); got != "wifi AND probe" {
+		t.Errorf("migrate2 = %q", got)
+	}
+
+	// nothing enabled → empty
+	if got := migrateLegacyExpr([]byte(`{}`), baseCfg()); got != "" {
+		t.Errorf("migrate empty = %q, want empty", got)
 	}
 }
 
 func TestNormalizeNetPolicy_Clamps(t *testing.T) {
 	c := netPolicyConfig{
-		Combine:     "weird",
 		IntervalSec: 1,
+		Expr:        "  wifi  ",
 		Probe:       probePolicy{Type: "bogus", Port: 0, TimeoutMS: 10, UpThreshold: 0, DownThreshold: -1},
 	}
 	n := normalizeNetPolicy(c)
-	if n.Combine != "AND" {
-		t.Errorf("combine not defaulted: %q", n.Combine)
+	if n.Expr != "wifi" {
+		t.Errorf("expr not trimmed: %q", n.Expr)
 	}
 	if n.IntervalSec != 5 {
 		t.Errorf("interval not clamped: %d", n.IntervalSec)
 	}
-	if n.Probe.Type != "ping" {
-		t.Errorf("probe type not defaulted: %q", n.Probe.Type)
-	}
-	if n.Probe.Port != 22 {
-		t.Errorf("port not defaulted: %d", n.Probe.Port)
-	}
-	if n.Probe.TimeoutMS != 200 {
-		t.Errorf("timeout not clamped: %d", n.Probe.TimeoutMS)
+	if n.Probe.Type != "ping" || n.Probe.Port != 22 || n.Probe.TimeoutMS != 200 {
+		t.Errorf("probe not normalized: %+v", n.Probe)
 	}
 	if n.Probe.UpThreshold != 1 || n.Probe.DownThreshold != 1 {
 		t.Errorf("thresholds not clamped: %d/%d", n.Probe.UpThreshold, n.Probe.DownThreshold)
 	}
 	if n.WiFi.Whitelist == nil {
-		t.Error("whitelist should be non-nil after normalize")
+		t.Error("whitelist should be non-nil")
 	}
 }
 
@@ -160,15 +169,30 @@ func TestParseSSID(t *testing.T) {
 
 func TestIfaceTransport(t *testing.T) {
 	cases := map[string]string{
-		"wlan0":      "wifi",
+		"wlan0":       "wifi",
 		"rmnet_data0": "cellular",
-		"ccmni0":     "cellular",
-		"eth0":       "other",
-		"":           "none",
+		"ccmni0":      "cellular",
+		"eth0":        "other",
+		"":            "none",
 	}
 	for dev, want := range cases {
 		if got := ifaceTransport(dev); got != want {
 			t.Errorf("ifaceTransport(%q) = %q, want %q", dev, got, want)
 		}
+	}
+}
+
+func TestParsePowerSave(t *testing.T) {
+	if !parsePowerSaveFlag("1\n") {
+		t.Error("low_power=1 should be on")
+	}
+	if parsePowerSaveFlag("0\n") {
+		t.Error("low_power=0 should be off")
+	}
+	if !parseDumpsysPowerSave("  mSettingBatterySaverEnabled=true") {
+		t.Error("dumpsys battery-saver true not detected")
+	}
+	if parseDumpsysPowerSave("  mLowPowerModeEnabled=false") {
+		t.Error("dumpsys battery-saver false misread as on")
 	}
 }

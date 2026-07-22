@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -39,9 +40,12 @@ type probePolicy struct {
 	DownThreshold int    `json:"down_threshold"` // consecutive failures to go down
 }
 
+// knownTerms are the identifiers usable in the policy expression.
+var knownTerms = []string{"wifi", "cellular", "power", "probe"}
+
 type netPolicyConfig struct {
 	Enabled     bool           `json:"enabled"`
-	Combine     string         `json:"combine"` // "AND" | "OR"
+	Expr        string         `json:"expr"` // boolean DSL over knownTerms
 	IntervalSec int            `json:"interval_sec"`
 	WiFi        wifiPolicy     `json:"wifi"`
 	Cellular    cellularPolicy `json:"cellular"`
@@ -52,7 +56,7 @@ type netPolicyConfig struct {
 func defaultNetPolicy() netPolicyConfig {
 	return netPolicyConfig{
 		Enabled:     false,
-		Combine:     "AND",
+		Expr:        "",
 		IntervalSec: 30,
 		WiFi:        wifiPolicy{Enabled: false, Whitelist: []string{}},
 		Cellular:    cellularPolicy{Enabled: false},
@@ -99,10 +103,44 @@ func loadNetPolicy() {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return
 	}
+	// migrate legacy configs (pre-expression) that used a "combine" field
+	if strings.TrimSpace(c.Expr) == "" {
+		c.Expr = migrateLegacyExpr(data, c)
+	}
 	npCfg = normalizeNetPolicy(c)
 }
 
+// migrateLegacyExpr builds an equivalent expression from an old-style config
+// (combine + per-condition enabled). Returns "" if nothing was enabled.
+func migrateLegacyExpr(raw []byte, c netPolicyConfig) string {
+	var legacy struct {
+		Combine string `json:"combine"`
+	}
+	_ = json.Unmarshal(raw, &legacy)
+	op := " AND "
+	if strings.ToUpper(legacy.Combine) == "OR" {
+		op = " OR "
+	}
+	var terms []string
+	if c.WiFi.Enabled {
+		terms = append(terms, "wifi")
+	}
+	if c.Cellular.Enabled {
+		terms = append(terms, "NOT cellular")
+	}
+	if c.Power.Enabled {
+		terms = append(terms, "NOT power")
+	}
+	if c.Probe.Enabled {
+		terms = append(terms, "probe")
+	}
+	return strings.Join(terms, op)
+}
+
 func saveNetPolicy(c netPolicyConfig) error {
+	if err := validateExpr(c.Expr, knownTerms); err != nil {
+		return fmt.Errorf("invalid expression: %w", err)
+	}
 	c = normalizeNetPolicy(c)
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -125,9 +163,7 @@ func saveNetPolicy(c netPolicyConfig) error {
 // normalizeNetPolicy clamps/repairs values so a hand-edited or partial config
 // can't break the monitor.
 func normalizeNetPolicy(c netPolicyConfig) netPolicyConfig {
-	if c.Combine != "OR" {
-		c.Combine = "AND"
-	}
+	c.Expr = strings.TrimSpace(c.Expr)
 	if c.IntervalSec < 5 {
 		c.IntervalSec = 5
 	}
@@ -313,14 +349,16 @@ func runProbe(p probePolicy) bool {
 
 // netState is a snapshot of detected network + policy decision (for the UI).
 type netState struct {
-	Transport   string `json:"transport"`
-	SSID        string `json:"ssid"`
-	PowerSave   bool   `json:"power_save"`
-	ProbeOK     bool   `json:"probe_ok"`
-	ProbeUp     bool   `json:"probe_up"` // committed hysteresis state
-	ShouldRun   bool   `json:"should_run"`
-	Enabled     bool   `json:"enabled"`
-	Explanation string `json:"explanation"`
+	Transport   string          `json:"transport"`
+	SSID        string          `json:"ssid"`
+	PowerSave   bool            `json:"power_save"`
+	ProbeOK     bool            `json:"probe_ok"`
+	ProbeUp     bool            `json:"probe_up"` // committed hysteresis state
+	Terms       map[string]bool `json:"terms"`    // per-term evaluated values
+	ShouldRun   bool            `json:"should_run"`
+	Enabled     bool            `json:"enabled"`
+	Explanation string          `json:"explanation"`
+	ExprError   string          `json:"expr_error"`
 }
 
 func ssidInWhitelist(ssid string, list []string) bool {
@@ -332,48 +370,52 @@ func ssidInWhitelist(ssid string, list []string) bool {
 	return false
 }
 
-// evaluatePolicy computes whether Syncthing should run given the config and the
-// detected transport/ssid/probe-up. Only enabled conditions contribute; they are
-// combined with AND or OR. If no condition is enabled, returns (true, reason).
-func evaluatePolicy(c netPolicyConfig, transport, ssid string, probeUp, powerSave bool) (bool, string) {
-	type cond struct {
-		name string
-		val  bool
-	}
-	var conds []cond
+// termValues computes the boolean value of each term. A term whose condition is
+// disabled evaluates to true (neutral under AND) per the configured semantics.
+func termValues(c netPolicyConfig, transport, ssid string, probeUp, powerSave bool) map[string]bool {
+	v := map[string]bool{}
 
 	if c.WiFi.Enabled {
-		v := transport == "wifi" && ssidInWhitelist(ssid, c.WiFi.Whitelist)
-		conds = append(conds, cond{"wifi-whitelist", v})
+		v["wifi"] = transport == "wifi" && ssidInWhitelist(ssid, c.WiFi.Whitelist)
+	} else {
+		v["wifi"] = true
 	}
 	if c.Cellular.Enabled {
-		// "stop on cellular" → condition is satisfied when NOT on cellular
-		v := transport != "cellular"
-		conds = append(conds, cond{"not-cellular", v})
+		v["cellular"] = transport == "cellular"
+	} else {
+		v["cellular"] = true
 	}
 	if c.Power.Enabled {
-		// "stop in battery saver" → condition satisfied when NOT in power save
-		conds = append(conds, cond{"not-powersave", !powerSave})
+		v["power"] = powerSave
+	} else {
+		v["power"] = true
 	}
 	if c.Probe.Enabled {
-		conds = append(conds, cond{"probe", probeUp})
+		v["probe"] = probeUp
+	} else {
+		v["probe"] = true
 	}
+	return v
+}
 
-	if len(conds) == 0 {
-		return true, "no condition enabled"
+// evaluatePolicy parses and evaluates the policy expression against the current
+// term values. Returns the decision, a human explanation, and any parse error.
+func evaluatePolicy(c netPolicyConfig, terms map[string]bool) (bool, string, error) {
+	node, err := parseExpr(c.Expr)
+	if err != nil {
+		return false, "", err
 	}
-
-	parts := make([]string, len(conds))
-	result := c.Combine == "AND" // AND starts true, OR starts false
-	for i, cd := range conds {
-		parts[i] = cd.name + "=" + strconv.FormatBool(cd.val)
-		if c.Combine == "AND" {
-			result = result && cd.val
-		} else {
-			result = result || cd.val
-		}
+	result := node.eval(terms)
+	parts := make([]string, 0, len(knownTerms))
+	for _, t := range knownTerms {
+		parts = append(parts, t+"="+strconv.FormatBool(terms[t]))
 	}
-	return result, c.Combine + "(" + strings.Join(parts, ", ") + ")"
+	expr := strings.TrimSpace(c.Expr)
+	if expr == "" {
+		expr = "(empty = always run)"
+	}
+	return result, expr + " → " + strconv.FormatBool(result) +
+		"  [" + strings.Join(parts, ", ") + "]", nil
 }
 
 // ── monitor ─────────────────────────────────────────────────────────────────
@@ -418,13 +460,20 @@ func detectNetState(c netPolicyConfig, commit bool) netState {
 	if c.Power.Enabled {
 		powerSave = detectPowerSave()
 	}
-	shouldRun, why := evaluatePolicy(c, transport, ssid, up, powerSave)
+	terms := termValues(c, transport, ssid, up, powerSave)
+	shouldRun, why, err := evaluatePolicy(c, terms)
+	exprErr := ""
+	if err != nil {
+		exprErr = err.Error()
+	}
 	return netState{
 		Transport: transport, SSID: ssid,
 		PowerSave: powerSave,
 		ProbeOK:   raw, ProbeUp: up,
+		Terms:     terms,
 		ShouldRun: shouldRun, Enabled: c.Enabled,
 		Explanation: why,
+		ExprError:   exprErr,
 	}
 }
 
@@ -437,7 +486,10 @@ func startNetPolicyMonitor() {
 
 			if c.Enabled {
 				st := detectNetState(c, true)
-				reconcile(st.ShouldRun)
+				// don't act on a broken expression — leave Syncthing as-is
+				if st.ExprError == "" {
+					reconcile(st.ShouldRun)
+				}
 			}
 
 			select {
@@ -478,7 +530,12 @@ func handleNetPolicySave(c *gin.Context) {
 		return
 	}
 	if err := saveNetPolicy(cfg); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		// invalid expression is a client error; anything else is server-side
+		status := 400
+		if !strings.Contains(err.Error(), "invalid expression") {
+			status = 500
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(200, gin.H{"message": "network policy saved", "config": getNetPolicy()})

@@ -111,7 +111,20 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
   background: none; border: none; color: var(--red); cursor: pointer; font-size: 14px; line-height: 1;
 }
 .muted { font-size: 12px; color: var(--text2); }
+.muted code, .status-detail code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; }
 .collapsed { display: none; }
+.token-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.token-bar button {
+  font: 12px monospace; padding: 5px 10px; border: 1px solid var(--surface2);
+  background: var(--surface2); color: var(--text); border-radius: 6px; cursor: pointer;
+}
+.token-bar button:active { transform: scale(.95); }
+.term-pill {
+  display: inline-block; font: 11px monospace; padding: 2px 7px; border-radius: 10px;
+  margin: 2px 4px 2px 0; background: var(--surface2);
+}
+.term-pill.t { color: var(--green); }
+.term-pill.f { color: var(--red); }
 </style>
 </head>
 <body>
@@ -168,11 +181,28 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
       </div>
 
       <div class="field">
-        <label>Combine conditions</label>
-        <select class="select" id="npCombine">
-          <option value="AND">AND — all enabled conditions must pass</option>
-          <option value="OR">OR — any enabled condition passes</option>
-        </select>
+        <label>Run condition (boolean expression)</label>
+        <input class="input" id="npExpr" placeholder="e.g. wifi AND NOT cellular"
+               style="font-family:monospace" oninput="clearExprError()">
+        <div class="token-bar">
+          <button type="button" onclick="insertToken('wifi')">wifi</button>
+          <button type="button" onclick="insertToken('cellular')">cellular</button>
+          <button type="button" onclick="insertToken('power')">power</button>
+          <button type="button" onclick="insertToken('probe')">probe</button>
+          <button type="button" onclick="insertToken('AND')">AND</button>
+          <button type="button" onclick="insertToken('OR')">OR</button>
+          <button type="button" onclick="insertToken('NOT')">NOT</button>
+          <button type="button" onclick="insertToken('(')">(</button>
+          <button type="button" onclick="insertToken(')')">)</button>
+          <button type="button" onclick="clearExpr()">clear</button>
+        </div>
+        <div class="muted" id="npExprErr" style="color:var(--red)"></div>
+        <div class="muted" style="margin-top:6px">
+          Empty = always run. Terms are true when:
+          <code>wifi</code>=on whitelisted SSID, <code>cellular</code>=on mobile data,
+          <code>power</code>=battery saver on, <code>probe</code>=target reachable.
+          A term whose section below is <b>off</b> is always <code>true</code>.
+        </div>
       </div>
       <div class="field">
         <label>Check interval (seconds)</label>
@@ -182,7 +212,7 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
       <!-- WiFi whitelist -->
       <div class="subsec">
         <div class="subsec-head">
-          <span class="setting-label">WiFi whitelist</span>
+          <span class="setting-label">WiFi whitelist <span class="badge">wifi</span></span>
           <label class="toggle">
             <input type="checkbox" id="npWifiEnabled"><span class="slider"></span>
           </label>
@@ -198,29 +228,29 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
       <!-- Cellular -->
       <div class="subsec">
         <div class="subsec-head">
-          <span class="setting-label">Stop on cellular</span>
+          <span class="setting-label">Cellular detection <span class="badge">cellular</span></span>
           <label class="toggle">
             <input type="checkbox" id="npCellEnabled"><span class="slider"></span>
           </label>
         </div>
-        <div class="muted">When on mobile data, Syncthing is kept stopped.</div>
+        <div class="muted">Term <code>cellular</code> is true on mobile data. Use <code>NOT cellular</code> to stop on cellular.</div>
       </div>
 
       <!-- Power save -->
       <div class="subsec">
         <div class="subsec-head">
-          <span class="setting-label">Follow battery saver</span>
+          <span class="setting-label">Battery-saver detection <span class="badge">power</span></span>
           <label class="toggle">
             <input type="checkbox" id="npPowerEnabled"><span class="slider"></span>
           </label>
         </div>
-        <div class="muted">When the system battery saver is on, Syncthing is kept stopped.</div>
+        <div class="muted">Term <code>power</code> is true in battery saver. Use <code>NOT power</code> to stop in battery saver.</div>
       </div>
 
       <!-- Probe -->
       <div class="subsec">
         <div class="subsec-head">
-          <span class="setting-label">Reachability probe</span>
+          <span class="setting-label">Reachability probe <span class="badge">probe</span></span>
           <label class="toggle">
             <input type="checkbox" id="npProbeEnabled"><span class="slider"></span>
           </label>
@@ -402,9 +432,34 @@ function onProbeTypeChange() {
   document.getElementById('npPortField').style.display = tcp ? 'block' : 'none';
 }
 
+function insertToken(tok) {
+  var el = document.getElementById('npExpr');
+  var start = el.selectionStart, end = el.selectionEnd;
+  var v = el.value;
+  var before = v.slice(0, start), after = v.slice(end);
+  // add a space around word tokens for readability
+  var word = /^[A-Za-z]/.test(tok);
+  var pad = word && before && !/\s$/.test(before) ? ' ' : '';
+  var ins = pad + tok + (word ? ' ' : '');
+  el.value = before + ins + after;
+  var pos = (before + ins).length;
+  el.focus();
+  el.setSelectionRange(pos, pos);
+  clearExprError();
+}
+
+function clearExpr() {
+  document.getElementById('npExpr').value = '';
+  clearExprError();
+}
+
+function clearExprError() {
+  document.getElementById('npExprErr').textContent = '';
+}
+
 function applyNetConfig(cfg) {
   document.getElementById('npEnabled').checked = cfg.enabled;
-  document.getElementById('npCombine').value = cfg.combine;
+  document.getElementById('npExpr').value = cfg.expr || '';
   document.getElementById('npInterval').value = cfg.interval_sec;
   document.getElementById('npWifiEnabled').checked = cfg.wifi.enabled;
   npWifiList = (cfg.wifi.whitelist || []).slice();
@@ -462,7 +517,7 @@ function toggleNetPolicy() {
 async function saveNetPolicy() {
   var cfg = {
     enabled: document.getElementById('npEnabled').checked,
-    combine: document.getElementById('npCombine').value,
+    expr: document.getElementById('npExpr').value.trim(),
     interval_sec: parseInt(document.getElementById('npInterval').value, 10) || 30,
     wifi: {
       enabled: document.getElementById('npWifiEnabled').checked,
