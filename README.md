@@ -73,7 +73,7 @@ syncthing4root_webserver --port <端口> --module-dir <模块目录> [--no-tls]
 
 ### 网络策略 (按网络状态自动启停)
 
-管理界面的 **📶 Network Policy** 卡片可根据当前网络状态自动启动 / 停止 Syncthing. 默认关闭, 需手动开启.
+管理界面的 **📶 Syncthing Running Policy** 卡片可根据当前网络状态自动启动 / 停止 Syncthing. 默认关闭, 需手动开启.
 
 - **总开关**: 启用后由策略接管启停; 关闭时为手动模式 (状态栏显示 `auto` / `manual` 徽标).
 - **检查间隔**: 轮询周期 (默认 30 秒, 范围 5–3600).

@@ -164,7 +164,7 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
   <div class="card">
     <div class="card-head" onclick="toggleNetPolicy()">
       <div>
-        <span class="card-title">📶 Network Policy</span>
+        <span class="card-title">📶 Syncthing Running Policy</span>
         <span class="badge" id="npBadge">off</span>
       </div>
       <span class="card-hint" id="npToggleHint">show</span>
@@ -498,12 +498,18 @@ function renderNetState(cfg, st) {
   }
 }
 
+var npWasEnabled = false;
+
 async function refreshNetPolicy() {
   var d = await api('/api/netpolicy');
   if (!d || !d.config) return;
   // don't clobber the form while the user is editing (only load once)
   if (!npLoaded) { applyNetConfig(d.config); npLoaded = true; }
   renderNetState(d.config, d.state);
+  // when the policy is active it may have auto start/stopped Syncthing since
+  // the last status poll — refresh the status card/buttons so they stay in sync
+  if (d.config.enabled || npWasEnabled) refreshStatus();
+  npWasEnabled = d.config.enabled;
 }
 
 function toggleNetPolicy() {
