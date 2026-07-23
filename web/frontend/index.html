@@ -201,7 +201,8 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
           Empty = always run. Terms are true when:
           <code>wifi</code>=on whitelisted SSID, <code>cellular</code>=on mobile data,
           <code>power</code>=battery saver on, <code>probe</code>=target reachable.
-          A term whose section below is <b>off</b> is always <code>true</code>.
+          When a section below is <b>off</b>: <code>wifi</code>/<code>cellular</code>/<code>probe</code>
+          are always <code>true</code>, and <code>power</code> is always <code>false</code>.
         </div>
       </div>
       <div class="field">
@@ -244,7 +245,7 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
             <input type="checkbox" id="npPowerEnabled"><span class="slider"></span>
           </label>
         </div>
-        <div class="muted">Term <code>power</code> is true in battery saver. Use <code>NOT power</code> to stop in battery saver.</div>
+        <div class="muted">Term <code>power</code> is true in battery saver (false when this check is off). Use <code>NOT power</code> to stop in battery saver.</div>
       </div>
 
       <!-- Probe -->

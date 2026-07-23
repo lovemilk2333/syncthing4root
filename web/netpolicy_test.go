@@ -21,13 +21,17 @@ func TestEvaluate_EmptyExpr(t *testing.T) {
 	}
 }
 
-func TestTermValues_DisabledIsTrue(t *testing.T) {
+func TestTermValues_Disabled(t *testing.T) {
 	c := baseCfg() // all conditions disabled
 	terms := termValues(c, "cellular", "Cafe", false, true)
-	for _, k := range knownTerms {
+	// wifi/cellular/probe default true; power defaults false
+	for _, k := range []string{"wifi", "cellular", "probe"} {
 		if !terms[k] {
 			t.Errorf("disabled term %q should be true, got false", k)
 		}
+	}
+	if terms["power"] {
+		t.Error("disabled power term should be false")
 	}
 }
 

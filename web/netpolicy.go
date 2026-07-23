@@ -370,8 +370,9 @@ func ssidInWhitelist(ssid string, list []string) bool {
 	return false
 }
 
-// termValues computes the boolean value of each term. A term whose condition is
-// disabled evaluates to true (neutral under AND) per the configured semantics.
+// termValues computes the boolean value of each term when its condition is
+// disabled: wifi/cellular/probe default to true (neutral under AND), while
+// power defaults to false so `NOT power` stays neutral when the check is off.
 func termValues(c netPolicyConfig, transport, ssid string, probeUp, powerSave bool) map[string]bool {
 	v := map[string]bool{}
 
@@ -388,7 +389,8 @@ func termValues(c netPolicyConfig, transport, ssid string, probeUp, powerSave bo
 	if c.Power.Enabled {
 		v["power"] = powerSave
 	} else {
-		v["power"] = true
+		// disabled → false (battery saver "off"), so `NOT power` stays neutral
+		v["power"] = false
 	}
 	if c.Probe.Enabled {
 		v["probe"] = probeUp
