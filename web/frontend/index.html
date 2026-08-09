@@ -221,7 +221,7 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
         <div class="chips" id="npWifiChips"></div>
         <div class="row2">
           <input class="input" id="npWifiInput" placeholder="SSID name">
-          <button class="btn btn-outline" style="flex:0 0 auto;padding:10px 14px" onclick="addWifi()">Add</button>
+          <button class="btn btn-outline" style="flex:0 0 auto;width:auto;padding:10px 14px" onclick="addWifi()">Add</button>
         </div>
         <button class="btn btn-outline" style="margin-top:8px" onclick="scanWifi()">📡 Scan current SSID</button>
       </div>
@@ -420,7 +420,8 @@ function addWifi() {
 async function scanWifi() {
   var d = await api('/api/netpolicy/scan');
   if (d.transport !== 'wifi' || !d.ssid) {
-    toast('❌ Not on WiFi or SSID unavailable (transport: ' + d.transport + ')');
+    var dev = d.iface ? ', dev: ' + d.iface : '';
+    toast('❌ Not on WiFi or SSID unavailable (transport: ' + d.transport + dev + ')');
     return;
   }
   if (npWifiList.indexOf(d.ssid) === -1) npWifiList.push(d.ssid);
@@ -484,7 +485,9 @@ function renderNetState(cfg, st) {
   else { badge.textContent = 'off'; badge.className = 'badge'; }
 
   var net = document.getElementById('netDetail');
-  var parts = ['Net: <code>' + st.transport + '</code>'];
+  var t = st.transport;
+  if (t === 'other' || t === 'none') t = '(' + t + ')';
+  var parts = ['Net: <code>' + t + '</code>'];
   if (st.ssid) parts.push('SSID: <code>' + st.ssid + '</code>');
   if (st.power_save) parts.push('<code style="color:var(--red)">battery saver</code>');
   net.innerHTML = parts.join(' &middot; ');
@@ -645,11 +648,18 @@ async function updateSyncthing() {
   var btn = document.getElementById('btnUpdate');
   btn.disabled = true;
   btn.textContent = '⏳ Checking...';
-  var data = await api('/api/update', { method: 'POST' });
-  if (data.error) { toast('❌ ' + data.error); }
-  else { toast('✅ ' + data.message); }
+  var msg = '';
+  try {
+    var data = await api('/api/update', { method: 'POST' });
+    if (data.error) { msg = '❌ ' + data.error; }
+    else if (data.message) { msg = '✅ ' + data.message; }
+    else { msg = '✅ Update complete'; }
+  } catch (e) {
+    msg = '❌ Request failed: ' + e;
+  }
   btn.disabled = false;
   btn.textContent = '🔄 Check & Update Syncthing';
+  toast(msg);
   refreshStatus();
 }
 

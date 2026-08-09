@@ -196,30 +196,116 @@ func normalizeNetPolicy(c netPolicyConfig) netPolicyConfig {
 
 // ── network detection (root, via Android system commands) ───────────────────
 
-// transport reports the active default-route transport: "wifi", "cellular",
-// "other", or "none".
-func detectTransport() string {
+// transport reports the active transport: "wifi", "cellular", "other", or
+// "none", plus the detected interface name. The default route is followed
+// first; when it goes through a proxy/VPN interface (tun/meta/...), the
+// physical transport is inferred from the UP interfaces instead.
+func detectTransport() (transport, iface string) {
 	out, err := exec.Command("ip", "route", "get", "8.8.8.8").CombinedOutput()
-	if err != nil {
-		return "none"
-	}
-	// e.g. "8.8.8.8 via 192.168.1.1 dev wlan0 src 192.168.1.100 uid 0"
-	fields := strings.Fields(string(out))
-	dev := ""
-	for i, f := range fields {
-		if f == "dev" && i+1 < len(fields) {
-			dev = fields[i+1]
-			break
+	if err == nil {
+		if dev := parseDevField(string(out)); dev != "" {
+			if t := ifaceTransport(dev); t != "other" {
+				return t, dev
+			}
+			// default route via proxy/VPN — fall through to the UP-interface scan
 		}
 	}
-	return ifaceTransport(dev)
+	return scanUpInterfaces()
+}
+
+// parseDevField extracts the interface name from `ip route get` output:
+// "8.8.8.8 via 192.168.1.1 dev wlan0 src 192.168.1.100 uid 0" -> "wlan0"
+func parseDevField(s string) string {
+	fields := strings.Fields(s)
+	for i, f := range fields {
+		if f == "dev" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+// scanUpInterfaces inspects `ip -4 addr` output and returns the physical
+// transport: the first UP interface that holds an IPv4 address, preferring
+// wifi over cellular (Android gives WiFi precedence when connected).
+func scanUpInterfaces() (string, string) {
+	out, err := exec.Command("ip", "-4", "addr").CombinedOutput()
+	if err != nil {
+		return "none", ""
+	}
+	return classifyUpInterfaces(string(out))
+}
+
+// classifyUpInterfaces parses `ip -4 addr` text. Interface blocks look like
+// "40: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> ..." followed by indented
+// "inet 10.0.0.151/16 ..." lines. Returns the transport of the first UP
+// interface with an IPv4 address, preferring wifi over cellular.
+func classifyUpInterfaces(s string) (string, string) {
+	cellular, otherDev := "", ""
+	curName, curUp := "", false
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			// new interface block
+			curName, curUp = parseIfaceBlock(t)
+			continue
+		}
+		if curName == "" || !curUp || !strings.HasPrefix(t, "inet ") {
+			continue
+		}
+		switch ifaceTransport(curName) {
+		case "wifi":
+			return "wifi", curName
+		case "cellular":
+			if cellular == "" {
+				cellular = curName
+			}
+		default:
+			if otherDev == "" && curName != "lo" {
+				otherDev = curName
+			}
+		}
+	}
+	if cellular != "" {
+		return "cellular", cellular
+	}
+	if otherDev != "" {
+		return "other", otherDev
+	}
+	return "none", ""
+}
+
+// parseIfaceBlock extracts the interface name and UP flag from a block line
+// like "40: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 ...".
+func parseIfaceBlock(line string) (name string, up bool) {
+	a := strings.Index(line, ": ")
+	if a < 0 {
+		return "", false
+	}
+	rest := line[a+2:]
+	b := strings.Index(rest, ": ")
+	if b < 0 {
+		return "", false
+	}
+	name = rest[:b]
+	flags := rest[b+2:]
+	if e := strings.Index(flags, ">"); e >= 0 {
+		flags = flags[:e]
+	}
+	return name, strings.Contains(flags, "UP")
 }
 
 func ifaceTransport(dev string) string {
 	switch {
 	case dev == "":
 		return "none"
-	case strings.HasPrefix(dev, "wlan"), strings.HasPrefix(dev, "ap"):
+	case strings.HasPrefix(dev, "wlan"), strings.HasPrefix(dev, "swlan"),
+		strings.HasPrefix(dev, "mlan"), strings.HasPrefix(dev, "ap"),
+		strings.HasPrefix(dev, "wifi"), strings.HasPrefix(dev, "wl0"),
+		strings.HasPrefix(dev, "wl1"):
 		return "wifi"
 	case strings.HasPrefix(dev, "rmnet"), strings.HasPrefix(dev, "ccmni"),
 		strings.HasPrefix(dev, "rmnet_data"), strings.HasPrefix(dev, "pdp"),
@@ -452,10 +538,10 @@ func evalProbeHysteresis(c netPolicyConfig, commit bool) (raw bool, up bool) {
 // detectNetState builds a full snapshot. commit controls probe hysteresis
 // advancement (true only from the monitor loop).
 func detectNetState(c netPolicyConfig, commit bool) netState {
-	transport := detectTransport()
-	ssid := ""
-	if transport == "wifi" {
-		ssid = detectSSID()
+	transport, _ := detectTransport()
+	ssid := detectSSID() // always try — a connected SSID proves WiFi
+	if ssid != "" {
+		transport = "wifi"
 	}
 	raw, up := evalProbeHysteresis(c, commit)
 	powerSave := false
@@ -545,10 +631,10 @@ func handleNetPolicySave(c *gin.Context) {
 
 // handleNetPolicyScan reports the current transport + SSID for whitelist entry.
 func handleNetPolicyScan(c *gin.Context) {
-	transport := detectTransport()
-	ssid := ""
-	if transport == "wifi" {
-		ssid = detectSSID()
+	transport, iface := detectTransport()
+	ssid := detectSSID() // always try — a connected SSID proves WiFi
+	if ssid != "" {
+		transport = "wifi"
 	}
-	c.JSON(200, gin.H{"transport": transport, "ssid": ssid})
+	c.JSON(200, gin.H{"transport": transport, "iface": iface, "ssid": ssid})
 }

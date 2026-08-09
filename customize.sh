@@ -110,21 +110,35 @@ if [ -z "$download_tool" ]; then
 fi
 
 # download helper
+# temp file for curl/wget stderr (download failure details)
+dl_err_file="$TMPDIR/syncthing4root_download.stderr"
+
 download_file() {
   local url="$1" output="$2"
   case "$download_tool" in
-    curl) curl -L -o "$output" "$url" ;;
-    wget) wget -O "$output" "$url" 2>/dev/null ;;
-    *) $download_tool -O "$output" "$url" 2>/dev/null ;;
+    curl) curl -sL -o "$output" "$url" 2>"$dl_err_file" ;;
+    wget) wget -O "$output" "$url" 2>"$dl_err_file" ;;
+    *) $download_tool -O "$output" "$url" 2>"$dl_err_file" ;;
   esac
+}
+
+# print curl/wget stderr as install log (download failure details)
+show_download_error() {
+  if [ -s "$dl_err_file" ]; then
+    ui_print "! error details:"
+    while IFS= read -r line; do
+      [ -n "$line" ] && ui_print "! $line"
+    done < "$dl_err_file"
+  fi
+  rm -f "$dl_err_file"
 }
 
 download_url() {
     local url="$1"
     case "$download_tool" in
-        curl) curl -s "$url" ;;
-        wget) wget -q -O - "$url" 2>/dev/null ;;
-        *)    $download_tool -q -O - "$url" 2>/dev/null ;;
+        curl) curl -s "$url" 2>"$dl_err_file" ;;
+        wget) wget -q -O - "$url" 2>"$dl_err_file" ;;
+        *)    $download_tool -q -O - "$url" 2>"$dl_err_file" ;;
     esac
 }
 
@@ -136,6 +150,7 @@ latest_version=$(echo "$json_data" | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
 
 # 2. 如果 GitHub 获取失败，回退到官方 upgrades 镜像
 if [ -z "$latest_version" ]; then
+    show_download_error
     ui_print "— GitHub API failed. Trying official upgrades mirror..."
     json_data=$(download_url "https://upgrades.syncthing.net/meta.json")
     
@@ -155,6 +170,7 @@ if [ -z "$latest_version" ]; then
 fi
 
 if [ -z "$latest_version" ]; then
+    show_download_error
     abort "failed to get latest version, check your network connection"
 fi
 
@@ -230,9 +246,11 @@ if [ "$skip_download" != true ]; then
   # download
   ui_print "— downloading $filename..."
   if ! download_file "$download_url" "$syncthing_tmpdir/$filename"; then
+    show_download_error
     if [ "$use_proxy" = "true" ]; then
       ui_print "! ghfast.top failed, retrying with GitHub..."
       if ! download_file "$github_url" "$syncthing_tmpdir/$filename"; then
+        show_download_error
         rm -rf "$syncthing_tmpdir"
         abort "download failed, check your network connection"
       fi

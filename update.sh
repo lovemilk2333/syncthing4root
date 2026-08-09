@@ -23,9 +23,17 @@ esac
 dl() {
   local url="$1" out="$2"
   if command -v curl >/dev/null 2>&1; then
-    [ -n "$out" ] && curl -L -o "$out" "$url" || curl -s "$url"
+    if [ -n "$out" ]; then
+      curl -sL -o "$out" "$url"
+    else
+      curl -s "$url"
+    fi
   else
-    [ -n "$out" ] && wget -O "$out" "$url" 2>/dev/null || wget -q -O - "$url" 2>/dev/null
+    if [ -n "$out" ]; then
+      wget -O "$out" "$url" 2>/dev/null
+    else
+      wget -q -O - "$url" 2>/dev/null
+    fi
   fi
 }
 
@@ -36,12 +44,12 @@ if [ -f "$syncthing_bin" ]; then
 fi
 
 # ── fetch latest version from GitHub API ──
-json=$(dl "https://api.github.com/repos/syncthing/syncthing/releases/latest" "")
+json=$(dl "https://api.github.com/repos/syncthing/syncthing/releases/latest" "" || true)
 latest=$(echo "$json" | grep '"tag_name"' | sed 's/.*"v//;s/".*//')
 
 # fallback to upgrades mirror
 if [ -z "$latest" ]; then
-  json=$(dl "https://upgrades.syncthing.net/meta.json" "")
+  json=$(dl "https://upgrades.syncthing.net/meta.json" "" || true)
   latest=$(echo "$json" | tr -d '\n\r ' | sed 's/},{"tag_name"/\n{"tag_name"/g' | grep '"prerelease":false' | head -1 | sed 's/.*"tag_name":"v//;s/".*//')
 fi
 

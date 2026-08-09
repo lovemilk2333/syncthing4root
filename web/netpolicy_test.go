@@ -159,6 +159,53 @@ func TestNormalizeNetPolicy_Clamps(t *testing.T) {
 	}
 }
 
+func TestParseDevField(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"8.8.8.8 via 192.168.1.1 dev wlan0 src 192.168.1.100 uid 0", "wlan0"},
+		{"8.8.8.8 via 198.18.0.1 dev meta src 10.0.0.151", "meta"},
+		{"", ""},
+		{"garbage output without dev", ""},
+	}
+	for _, c := range cases {
+		if got := parseDevField(c.in); got != c.want {
+			t.Errorf("parseDevField(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestClassifyUpInterfaces(t *testing.T) {
+	// fixture mirrors the user's device: wlan0 + ccmni0 + meta all UP
+	fixture := `
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    inet 127.0.0.1/8 scope host lo
+40: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc htb state UP group default qlen 3000
+    inet 10.0.0.151/16 brd 10.0.255.255 scope global wlan0
+14: ccmni0: <NOARP,UP,LOWER_UP> mtu 1460 qdisc mq state UNKNOWN group default qlen 1000
+    inet 10.30.0.5/30 scope global ccmni0
+50: meta: <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> mtu 9000 qdisc pfifo_fast state UNKNOWN group default qlen 500
+    inet 198.18.0.1/30 brd 198.18.0.3 scope global meta
+47: p2p0: <BROADCAST,MULTICAST> mtu 1500 qdisc mq state DOWN group default qlen 1000
+    inet 192.168.49.1/24 brd 192.168.49.255 scope global p2p0
+`
+	cases := []struct {
+		name, in, wantT, wantDev string
+	}{
+		{"wifi preferred", fixture, "wifi", "wlan0"},
+		{"only cellular", "14: ccmni0: <NOARP,UP,LOWER_UP> mtu 1460\n    inet 10.30.0.5/30 scope global ccmni0\n", "cellular", "ccmni0"},
+		{"only proxy iface", "50: meta: <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> mtu 9000\n    inet 198.18.0.1/30 scope global meta\n", "other", "meta"},
+		{"only loopback", "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n    inet 127.0.0.1/8 scope host lo\n", "none", ""},
+		{"down iface with inet is ignored", "47: p2p0: <BROADCAST,MULTICAST> mtu 1500 state DOWN\n    inet 192.168.49.1/24 scope global p2p0\n", "none", ""},
+		{"empty", "", "none", ""},
+	}
+	for _, c := range cases {
+		gotT, gotDev := classifyUpInterfaces(c.in)
+		if gotT != c.wantT || gotDev != c.wantDev {
+			t.Errorf("%s: classifyUpInterfaces = (%q, %q), want (%q, %q)",
+				c.name, gotT, gotDev, c.wantT, c.wantDev)
+		}
+	}
+}
+
 func TestParseSSID(t *testing.T) {
 	if got := parseSSIDFromQuoted(`Wifi is connected to "MyNet"`); got != "MyNet" {
 		t.Errorf("quoted parse = %q", got)
@@ -174,8 +221,14 @@ func TestParseSSID(t *testing.T) {
 func TestIfaceTransport(t *testing.T) {
 	cases := map[string]string{
 		"wlan0":       "wifi",
+		"swlan0":      "wifi",
+		"mlan0":       "wifi",
+		"wifi0":       "wifi",
+		"wl0":         "wifi",
+		"ap0":         "wifi",
 		"rmnet_data0": "cellular",
 		"ccmni0":      "cellular",
+		"clat4":       "cellular",
 		"eth0":        "other",
 		"":            "none",
 	}
