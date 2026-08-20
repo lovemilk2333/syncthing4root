@@ -20,7 +20,7 @@ echo "— compiling web server (ARM64)..."
 
 # copy module assets into staging
 echo "— copying module files..."
-cp module.prop customize.sh action.sh uninstall.sh update.sh README.md LICENSE build/
+cp module.prop customize.sh action.sh uninstall.sh README.md LICENSE build/
 cp -r META-INF build/
 
 # create the zip from staging (everything in build/ goes in)

@@ -517,43 +517,85 @@ func handleChangeUsername(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "username updated"})
 }
 
+func handleDNSConfigGet(c *gin.Context) {
+	cfg := dnsCfg.Load().(dnsConfig)
+	c.JSON(http.StatusOK, gin.H{
+		"dns":      cfg.Server,
+		"detected": detectDNSServerInfo(c.Request.Context()),
+	})
+}
+
+func handleDNSConfigSave(c *gin.Context) {
+	var req struct {
+		DNS string `json:"dns"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if err := saveDNSConfig(req.DNS); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "DNS config saved, applied to the next request"})
+}
+
 func handleUpdate(c *gin.Context) {
 	startMu.Lock()
 	defer startMu.Unlock()
 
-	updateScript := filepath.Join(moduleDir, "update.sh")
-	if _, err := os.Stat(updateScript); os.IsNotExist(err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "update.sh not found"})
+	// bound check + install so a stalled network can't hang the request forever
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// Phase 1 — check only. Syncthing is left untouched until we know there
+	// is an actual update, so a failed or unnecessary check never stops it.
+	latest, err := fetchLatestVersion(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	installed := installedVersion()
+	if installed == latest {
+		c.JSON(http.StatusOK, gin.H{"message": "already up to date (v" + latest + ")"})
 		return
 	}
 
-	// stop syncthing first to free the binary for replacement
-	if isRunning() {
-		pid, _ := getSyncthingPID()
-		exec.Command("kill", "-2", strconv.Itoa(pid)).Run()
-		time.Sleep(2 * time.Second)
-		if _, err := getSyncthingPID(); err == nil {
-			exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
-		}
-		os.Remove(pidFile)
+	// Phase 2 — update available. Stop syncthing to free the binary, download,
+	// install, then restore the previous running state.
+	wasRunning := isRunning()
+	if wasRunning {
+		_ = stopSyncthingLocked()
 	}
+	msg := "updating syncthing " + orNone(installed) + " -> v" + latest + "\n"
+	tarball, err := downloadBinary(ctx, latest)
+	if err == nil {
+		err = installBinary(tarball)
+	}
+	os.Remove(tarball) // no-op when the download failed
 
-	// bound the download so a stalled network can't hang the request forever
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "sh", updateScript, moduleDir)
-	output, err := cmd.CombinedOutput()
+	restartNote := ""
+	if wasRunning {
+		if _, rerr := startSyncthingLocked(); rerr != nil && rerr != errAlreadyRunning {
+			restartNote = "\n(warning: failed to restart syncthing: " + rerr.Error() + ")"
+		}
+	}
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			c.JSON(http.StatusGatewayTimeout, gin.H{"error": "update timed out"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": string(output)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": msg + err.Error() + restartNote})
 		return
 	}
+	c.JSON(http.StatusOK, gin.H{"message": msg + "updated to syncthing v" + latest + restartNote})
+}
 
-	c.JSON(http.StatusOK, gin.H{"message": string(output)})
+func orNone(v string) string {
+	if v == "" {
+		return "none"
+	}
+	return "v" + v
 }
 
 // ── main ────────────────────────────────────────────────────────────────
@@ -590,6 +632,7 @@ func main() {
 	pidFile = filepath.Join(syncthingDir, "syncthing.pid")
 
 	loadOrGenerateAuthCredentials()
+	loadDNSConfig()
 	loadNetPolicy()
 	startNetPolicyMonitor()
 
@@ -622,6 +665,8 @@ func main() {
 		api.POST("/change-password", handleChangePassword)
 		api.POST("/change-username", handleChangeUsername)
 		api.POST("/update", handleUpdate)
+		api.GET("/dns-config", handleDNSConfigGet)
+		api.POST("/dns-config", handleDNSConfigSave)
 		api.GET("/netpolicy", handleNetPolicyGet)
 		api.POST("/netpolicy", handleNetPolicySave)
 		api.GET("/netpolicy/scan", handleNetPolicyScan)

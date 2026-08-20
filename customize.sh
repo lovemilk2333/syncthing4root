@@ -66,6 +66,8 @@ if [ -d "$runtime_dir/home" ]; then
   [ -f "$runtime_dir/.autostart_disabled" ] && cp "$runtime_dir/.autostart_disabled" "$syncthing_data_dir/"
   # preserve network policy config
   [ -f "$runtime_dir/.netpolicy.json" ] && cp "$runtime_dir/.netpolicy.json" "$syncthing_data_dir/"
+  # preserve DNS resolver config
+  [ -f "$runtime_dir/.dns_config" ] && cp "$runtime_dir/.dns_config" "$syncthing_data_dir/"
 else
   mkdir -p "$syncthing_data_dir"
 fi
@@ -136,9 +138,9 @@ show_download_error() {
 download_url() {
     local url="$1"
     case "$download_tool" in
-        curl) curl -s "$url" 2>"$dl_err_file" ;;
-        wget) wget -q -O - "$url" 2>"$dl_err_file" ;;
-        *)    $download_tool -q -O - "$url" 2>"$dl_err_file" ;;
+        curl) curl -sL --connect-timeout 10 --max-time 20 "$url" 2>"$dl_err_file" ;;
+        wget) wget -q -T 20 -O - "$url" 2>"$dl_err_file" ;;
+        *)    $download_tool -q -T 20 -O - "$url" 2>"$dl_err_file" ;;
     esac
 }
 
@@ -167,6 +169,13 @@ if [ -z "$latest_version" ]; then
             head -n 1 | \
             sed 's/.*"tag_name":"v//;s/".*//')
     fi
+fi
+
+# 3. 最后尝试 ghfast.top 代理 GitHub releases 页面（从 tag URL 解析版本号）
+if [ -z "$latest_version" ]; then
+    ui_print "— trying ghfast.top proxy..."
+    page_data=$(download_url "https://ghfast.top/https://github.com/syncthing/syncthing/releases/latest")
+    latest_version=$(echo "$page_data" | grep -o 'releases/tag/v[0-9][0-9.]*' | head -n 1 | sed 's/.*tag\/v//')
 fi
 
 if [ -z "$latest_version" ]; then
@@ -280,7 +289,6 @@ set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm_recursive "$syncthing_data_dir" 0 3005 0755 0644
 set_perm "$syncthing_data_dir/syncthing" 0 3005 0755
 set_perm "$MODPATH/uninstall.sh" 0 0 0755
-set_perm "$MODPATH/update.sh" 0 0 0755
 set_perm "$MODPATH/syncthing4root_webserver" 0 0 0755
 
 # verify binary exists

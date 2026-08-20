@@ -83,6 +83,12 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
 }
 .card-title { font-size: 15px; font-weight: 600; }
 .card-hint { font-size: 12px; color: var(--text2); }
+.dns-chip {
+  font-size: 11px; padding: 3px 10px; border-radius: 10px;
+  background: var(--surface2); color: var(--text2); cursor: pointer;
+  user-select: none; white-space: nowrap;
+}
+.dns-chip:hover { color: var(--text); }
 .badge {
   display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px;
   background: var(--surface2); color: var(--text2); vertical-align: middle;
@@ -295,6 +301,32 @@ footer { text-align: center; margin-top: 28px; font-size: 12px; color: var(--tex
 
   <div class="card">
     <button class="btn btn-outline" id="btnUpdate" onclick="updateSyncthing()">🔄 Check & Update Syncthing</button>
+  </div>
+
+  <div class="card" id="dnsSection">
+    <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleDnsForm()">
+      <span class="setting-label">🌐 DNS Resolver</span>
+      <span id="dnsToggle" style="font-size:12px;color:var(--text2)">show</span>
+    </div>
+    <div id="dnsForm" style="display:none;margin-top:14px">
+      <div style="font-size:13px;color:var(--text2);margin-bottom:10px">
+        Used for the update check. Android's system DNS often fails for root
+        daemons — leave empty to auto-detect the LAN DNS (non-LAN servers are
+        ignored and shown <s>struck through</s> below), or set an IP
+        (<code>192.168.1.1</code>, <code>192.168.1.1:5353</code>), a DoH URL
+        (<code>https://…</code>) or a DoT server (<code>tls://…</code>, port 853).
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+        <span class="dns-chip" onclick="setDns('')">auto</span>
+        <span class="dns-chip" onclick="setDns('https://doh.pub/dns-query')">DoH doh.pub</span>
+        <span class="dns-chip" onclick="setDns('https://dns.alidns.com/dns-query')">DoH alidns</span>
+        <span class="dns-chip" onclick="setDns('https://dns.cloudflare.com/dns-query')">DoH Cloudflare</span>
+        <span class="dns-chip" onclick="setDns('tls://1.1.1.1')">DoT 1.1.1.1</span>
+      </div>
+      <input type="text" id="dnsServer" placeholder="DNS server (empty = auto)" style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:8px;background:var(--surface2);color:var(--text);font-size:14px">
+      <div id="dnsDetected" style="font-size:12px;color:var(--text2);margin-bottom:10px">Detected: —</div>
+      <button class="btn btn-outline" onclick="saveDnsConfig(this)">Save DNS</button>
+    </div>
   </div>
 
   <div class="card" id="passwordSection">
@@ -644,14 +676,74 @@ async function changePassword() {
   toast('✅ Password updated');
 }
 
+function toggleDnsForm() {
+  var form = document.getElementById('dnsForm');
+  var toggle = document.getElementById('dnsToggle');
+  var show = form.style.display !== 'block';
+  form.style.display = show ? 'block' : 'none';
+  toggle.textContent = show ? 'hide' : 'show';
+  if (show) { refreshDnsConfig(); }
+}
+
+function setDns(v) {
+  document.getElementById('dnsServer').value = v;
+}
+
+async function refreshDnsConfig() {
+  try {
+    var data = await api('/api/dns-config');
+    document.getElementById('dnsServer').value = data.dns || '';
+    var box = document.getElementById('dnsDetected');
+    box.textContent = '';
+    box.appendChild(document.createTextNode('Detected: '));
+    var items = data.detected || [];
+    if (!items.length) {
+      box.appendChild(document.createTextNode('—'));
+      return;
+    }
+    items.forEach(function (d, i) {
+      if (i > 0) { box.appendChild(document.createTextNode(', ')); }
+      var span = document.createElement('span');
+      span.textContent = d.ip;
+      span.title = d.lan
+        ? 'LAN DNS server — used in auto mode'
+        : 'non-LAN — ignored in auto mode';
+      if (!d.lan) {
+        span.style.textDecoration = 'line-through';
+        span.style.opacity = '0.5';
+      }
+      box.appendChild(span);
+    });
+  } catch (e) { /* page may be mid-load */ }
+}
+
+async function saveDnsConfig(btn) {
+  setLoading(btn, true);
+  var data = await api('/api/dns-config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dns: document.getElementById('dnsServer').value }),
+  });
+  setLoading(btn, false);
+  if (data.error) { toast('❌ ' + data.error); return; }
+  toast('✅ ' + data.message);
+  refreshDnsConfig();
+}
+
 async function updateSyncthing() {
   var btn = document.getElementById('btnUpdate');
   btn.disabled = true;
   btn.textContent = '⏳ Checking...';
   var msg = '';
+  var dialogShown = false;
   try {
     var data = await api('/api/update', { method: 'POST' });
-    if (data.error) { msg = '❌ ' + data.error; }
+    if (data.error) {
+      // full multi-line diagnostics — shown in a modal; toast would
+      // collapse the newlines and duplicate the message
+      alert('❌ Update failed. ' + data.error);
+      dialogShown = true;
+    }
     else if (data.message) { msg = '✅ ' + data.message; }
     else { msg = '✅ Update complete'; }
   } catch (e) {
@@ -659,7 +751,7 @@ async function updateSyncthing() {
   }
   btn.disabled = false;
   btn.textContent = '🔄 Check & Update Syncthing';
-  toast(msg);
+  if (!dialogShown) { toast(msg); }
   refreshStatus();
 }
 

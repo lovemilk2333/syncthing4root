@@ -23,6 +23,7 @@
 | Auto-start on boot | 开关开机自启动 |
 | 🔑 Account | 修改管理后台登录用户名 / 密码 |
 | 🔄 Check & Update Syncthing | 检查并更新 Syncthing 到最新版 |
+| 🌐 DNS Resolver | 配置更新检查使用的 DNS (自动检测局域网 DNS / 指定 IP / DoH / DoT), 自动模式忽略非局域网 DNS, 解决 Android root 进程 DNS 解析失败问题 |
 
 管理后台默认地址: `https://127.0.0.1:48344/ui/` (默认账号 `admin` / `admin`)
 
@@ -55,6 +56,8 @@
 | POST | `/api/autostart/enable` | 启用开机自启动 |
 | POST | `/api/autostart/disable` | 禁用开机自启动 |
 | POST | `/api/update` | 更新 Syncthing 到最新版 |
+| GET  | `/api/dns-config` | 读取 DNS 解析器配置 + 自动检测的 DNS 列表 (每项标注是否为局域网) |
+| POST | `/api/dns-config` | 保存 DNS 配置 (留空=自动 / IP / IP:端口 / DoH `https://` / DoT `tls://`) |
 | POST | `/api/change-password` | 修改登录密码 (需旧密码验证) |
 | POST | `/api/change-username` | 修改登录用户名 (需密码验证) |
 | GET  | `/api/netpolicy` | 读取网络策略配置 + 当前网络状态 |
