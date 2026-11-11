@@ -328,26 +328,8 @@ if [ -f "\$web_bin" ] && ! pgrep -f syncthing4root_webserver >/dev/null 2>&1; th
     \$web_bin --port 48344 --module-dir "${module_dir}" &
 fi
 
-autostart_flag="${runtime_dir}/.autostart_disabled"
-# respect autostart toggle
-if [ -f "\$autostart_flag" ]; then
-    exit 0
-fi
-
-syncthing_bin="${runtime_dir}/syncthing"
-syncthing_home="${runtime_dir}/home"
-log_file="${runtime_dir}/service.log"
-
-# don't launch a second syncthing — it would fail on the DB lock
-if [ -f "\$syncthing_bin" ] && ! pgrep -f "\$syncthing_bin" >/dev/null 2>&1; then
-    mkdir -p "\${syncthing_home}"
-    user_storage="\$(ls -d /storage/emulated/* 2>/dev/null | head -1)"
-    [ -z "\$user_storage" ] && user_storage="/storage/emulated/0"
-    export HOME="\$user_storage"  # home is only for the path \`~\`
-    \$syncthing_bin serve --home="\${syncthing_home}" --no-browser > "\$log_file" 2>&1 &
-    # write PID for web_server status check (boot-start without pidfile)
-    echo \$! > "${runtime_dir}/syncthing.pid"
-fi
+# Syncthing itself is started by the web server according to the autostart
+# toggle. Its output is kept in an in-memory ring buffer, never on disk.
 EOF
 set_perm "$service_dir/syncthing_service.sh" 0 0 0755
 
@@ -376,27 +358,8 @@ if [ -f "\$web_bin" ] && ! pgrep -f syncthing4root_webserver >/dev/null 2>&1; th
     \$web_bin --port 48344 --module-dir "${module_dir}" &
 fi
 
-autostart_flag="${runtime_dir}/.autostart_disabled"
-
-# respect autostart toggle
-if [ -f "\$autostart_flag" ]; then
-    exit 0
-fi
-
-syncthing_bin="${runtime_dir}/syncthing"
-syncthing_home="${runtime_dir}/home"
-log_file="${runtime_dir}/service.log"
-
-# don't launch a second syncthing — it would fail on the DB lock
-if [ -f "\$syncthing_bin" ] && ! pgrep -f "\$syncthing_bin" >/dev/null 2>&1; then
-    mkdir -p "\${syncthing_home}"
-    user_storage="\$(ls -d /storage/emulated/* 2>/dev/null | head -1)"
-    [ -z "\$user_storage" ] && user_storage="/storage/emulated/0"
-    export HOME="\$user_storage"
-    \$syncthing_bin serve --home="\${syncthing_home}" --no-browser > "\$log_file" 2>&1 &
-    # write PID for web_server status check (boot-start without pidfile)
-    echo \$! > "${runtime_dir}/syncthing.pid"
-fi
+# Syncthing itself is started by the web server according to the autostart
+# toggle. Its output is kept in an in-memory ring buffer, never on disk.
 EOF
 set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/action.sh" 0 0 0755

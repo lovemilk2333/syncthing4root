@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -26,7 +27,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-//go:embed frontend/*
+//go:embed frontend/dist
 var frontendFS embed.FS
 
 var (
@@ -34,7 +35,6 @@ var (
 	syncthingDir  string
 	syncthingBin  string
 	syncthingHome string
-	syncthingLog  string
 	autostartFlag string
 	pidFile       string
 	authUser      string
@@ -283,20 +283,29 @@ func serveUI(c *gin.Context) {
 		path = "/index.html"
 	}
 
-	data, err := frontendFS.ReadFile("frontend" + path)
+	data, err := frontendFS.ReadFile("frontend/dist" + path)
 	if err != nil {
-		c.Status(http.StatusNotFound)
-		return
+		// SPA fallback: unknown paths render the app shell
+		data, err = frontendFS.ReadFile("frontend/dist/index.html")
+		if err != nil {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		path = "/index.html"
 	}
 
-	switch {
-	case strings.HasSuffix(path, ".css"):
-		c.Data(http.StatusOK, "text/css; charset=utf-8", data)
-	case strings.HasSuffix(path, ".js"):
-		c.Data(http.StatusOK, "application/javascript", data)
-	default:
-		c.Data(http.StatusOK, http.DetectContentType(data), data)
+	if strings.HasPrefix(path, "/assets/") {
+		// Vite emits content-hashed asset names — safe to cache forever
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		c.Header("Cache-Control", "no-cache")
 	}
+
+	if ct := mime.TypeByExtension(filepath.Ext(path)); ct != "" {
+		c.Data(http.StatusOK, ct, data)
+		return
+	}
+	c.Data(http.StatusOK, http.DetectContentType(data), data)
 }
 
 // ── API handlers ────────────────────────────────────────────────────────
@@ -334,55 +343,64 @@ var (
 )
 
 // startSyncthing launches Syncthing if not already running and returns its PID.
-// Shared by the HTTP handler and the network-policy monitor; acquires startMu
-// so a double-tap or a policy tick can't race the DB lock.
-func startSyncthing() (int, error) {
+// reason is recorded in the state-change log. Shared by the HTTP handler and
+// the network-policy monitor; acquires startMu so a double-tap or a policy
+// tick can't race the DB lock.
+func startSyncthing(reason string) (int, error) {
 	startMu.Lock()
 	defer startMu.Unlock()
-	return startSyncthingLocked()
+	return startSyncthingLocked(reason)
 }
 
 // startSyncthingLocked assumes startMu is already held.
-func startSyncthingLocked() (int, error) {
+func startSyncthingLocked(reason string) (int, error) {
 	if isRunning() {
 		return 0, errAlreadyRunning
 	}
 	if _, err := os.Stat(syncthingBin); os.IsNotExist(err) {
 		return 0, errBinNotFound
 	}
-	logFile, err := os.OpenFile(syncthingLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return 0, fmt.Errorf("cannot open log: %w", err)
-	}
-	defer logFile.Close()
-
 	cmd := exec.Command(syncthingBin, "serve", "--home="+syncthingHome, "--no-browser")
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	cmd.Stdout = syncthingLog
+	cmd.Stderr = syncthingLog
 	cmd.Env = append(os.Environ(), "HOME="+userStorageHome())
 
 	if err := cmd.Start(); err != nil {
+		recordState("start failed", reason+" ("+err.Error()+")")
 		return 0, err
 	}
 	pid := cmd.Process.Pid
+	recordState(fmt.Sprintf("started (pid %d)", pid), reason)
+	syncthingLog.Write([]byte(fmt.Sprintf("=== syncthing started (pid %d) ===\n", pid)))
 	// reap the child when it exits so it never lingers as a <defunct> zombie
-	// (the web server is a long-lived parent).
-	go func() { _ = cmd.Wait() }()
+	// (the web server is a long-lived parent) and push the new state to the UI.
+	go func() {
+		err := cmd.Wait()
+		syncthingLog.flushPartial()
+		syncthingLog.Write([]byte(fmt.Sprintf("=== syncthing exited: %v ===\n", err)))
+		if err != nil {
+			recordState("exited", "process ended: "+err.Error())
+		} else {
+			recordState("exited", "process ended cleanly")
+		}
+		signal(statusEventCh)
+		publishSnapshot()
+	}()
 	// save PID to lock file
 	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", pid)), 0644)
 	return pid, nil
 }
 
 // stopSyncthing gracefully stops Syncthing (SIGINT, then SIGKILL fallback).
-// Shared by the HTTP handler and the monitor; acquires startMu.
-func stopSyncthing() error {
+// reason is recorded in the state-change log; acquires startMu.
+func stopSyncthing(reason string) error {
 	startMu.Lock()
 	defer startMu.Unlock()
-	return stopSyncthingLocked()
+	return stopSyncthingLocked(reason)
 }
 
 // stopSyncthingLocked assumes startMu is already held.
-func stopSyncthingLocked() error {
+func stopSyncthingLocked(reason string) error {
 	pid, err := getSyncthingPID()
 	if err != nil {
 		return errNotRunning
@@ -393,17 +411,45 @@ func stopSyncthingLocked() error {
 
 	// wait for graceful exit, force if still alive
 	time.Sleep(2 * time.Second)
+	forced := false
 	if _, err := getSyncthingPID(); err == nil {
 		exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+		forced = true
 	}
 
 	// clean up pid file
 	os.Remove(pidFile)
+	if forced {
+		recordState(fmt.Sprintf("stopped (pid %d, forced SIGKILL)", pid), reason)
+	} else {
+		recordState(fmt.Sprintf("stopped (pid %d)", pid), reason)
+	}
+	signal(statusEventCh)
 	return nil
 }
 
+// autostartSyncthing launches Syncthing in the background on boot when the
+// autostart toggle is enabled. The web server owns the process so its entire
+// output can be captured into the in-memory log buffer instead of a file.
+func autostartSyncthing() {
+	if _, err := os.Stat(autostartFlag); err == nil {
+		return // autostart disabled by the user
+	}
+	if _, err := os.Stat(syncthingBin); err != nil {
+		return
+	}
+	if isRunning() {
+		return
+	}
+
+	if _, err := startSyncthing("autostart at boot"); err != nil && err != errAlreadyRunning {
+		fmt.Fprintf(os.Stderr, "syncthing autostart failed: %v\n", err)
+	}
+	publishSnapshot()
+}
+
 func handleStart(c *gin.Context) {
-	pid, err := startSyncthing()
+	pid, err := startSyncthing("user request (web UI: Start)")
 	switch {
 	case err == errAlreadyRunning:
 		c.JSON(http.StatusConflict, gin.H{"error": "Syncthing is already running"})
@@ -413,15 +459,17 @@ func handleStart(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 	default:
 		c.JSON(http.StatusOK, gin.H{"message": "Syncthing started", "pid": pid})
+		publishSnapshot()
 	}
 }
 
 func handleStop(c *gin.Context) {
-	if err := stopSyncthing(); err == errNotRunning {
+	if err := stopSyncthing("user request (web UI: Stop)"); err == errNotRunning {
 		c.JSON(http.StatusConflict, gin.H{"error": "Syncthing is not running"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Syncthing stopped"})
+	publishSnapshot()
 }
 
 func handleOpenSyncthing(c *gin.Context) {
@@ -451,6 +499,7 @@ func handleAutostartDisable(c *gin.Context) {
 	}
 	f.Close()
 	c.JSON(http.StatusOK, gin.H{"message": "Autostart disabled"})
+	publishSnapshot()
 }
 
 func handleAutostartEnable(c *gin.Context) {
@@ -459,6 +508,7 @@ func handleAutostartEnable(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Autostart enabled"})
+	publishSnapshot()
 }
 
 func handleSyncthingURL(c *gin.Context) {
@@ -515,6 +565,57 @@ func handleChangeUsername(c *gin.Context) {
 	authUser = req.NewUsername
 	saveAuthConfig()
 	c.JSON(http.StatusOK, gin.H{"message": "username updated"})
+	publishSnapshot()
+}
+
+// handleAccountUpdate updates the username and/or password in one request.
+// Either field may be omitted, the current password is always required.
+func handleAccountUpdate(c *gin.Context) {
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewUsername     string `json:"new_username"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(authPassHash), []byte(req.CurrentPassword)) != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "current password is incorrect"})
+		return
+	}
+
+	newUser := strings.TrimSpace(req.NewUsername)
+	newPass := req.NewPassword
+	if newUser == "" && newPass == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nothing to update"})
+		return
+	}
+	if newPass != "" && len(newPass) < 4 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 4 characters"})
+		return
+	}
+
+	var newHash string
+	if newPass != "" {
+		h, err := hashPassword(newPass)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+			return
+		}
+		newHash = h
+	}
+
+	// apply only after every check passed so a rejected request changes nothing
+	if newUser != "" {
+		authUser = newUser
+	}
+	if newHash != "" {
+		authPassHash = newHash
+	}
+	saveAuthConfig()
+	c.JSON(http.StatusOK, gin.H{"message": "account updated"})
+	publishSnapshot()
 }
 
 func handleDNSConfigGet(c *gin.Context) {
@@ -547,6 +648,7 @@ func handleUpdate(c *gin.Context) {
 	// bound check + install so a stalled network can't hang the request forever
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	defer publishSnapshot()
 
 	// Phase 1 — check only. Syncthing is left untouched until we know there
 	// is an actual update, so a failed or unnecessary check never stops it.
@@ -564,10 +666,11 @@ func handleUpdate(c *gin.Context) {
 	// Phase 2 — update available. Stop syncthing to free the binary, download,
 	// install, then restore the previous running state.
 	wasRunning := isRunning()
+	updateReason := "updating Syncthing " + orNone(installed) + " -> v" + latest
 	if wasRunning {
-		_ = stopSyncthingLocked()
+		_ = stopSyncthingLocked(updateReason)
 	}
-	msg := "updating syncthing " + orNone(installed) + " -> v" + latest + "\n"
+	msg := updateReason + "\n"
 	tarball, err := downloadBinary(ctx, latest)
 	if err == nil {
 		err = installBinary(tarball)
@@ -576,7 +679,7 @@ func handleUpdate(c *gin.Context) {
 
 	restartNote := ""
 	if wasRunning {
-		if _, rerr := startSyncthingLocked(); rerr != nil && rerr != errAlreadyRunning {
+		if _, rerr := startSyncthingLocked("restart after update to v" + latest); rerr != nil && rerr != errAlreadyRunning {
 			restartNote = "\n(warning: failed to restart syncthing: " + rerr.Error() + ")"
 		}
 	}
@@ -601,6 +704,8 @@ func orNone(v string) string {
 // ── main ────────────────────────────────────────────────────────────────
 
 func main() {
+	captureProcessOutput()
+
 	port := "48344"
 	moduleDir = ""
 	for i, arg := range os.Args {
@@ -627,14 +732,20 @@ func main() {
 	syncthingDir = filepath.Join(moduleDir, "syncthing")
 	syncthingBin = filepath.Join(syncthingDir, "syncthing")
 	syncthingHome = filepath.Join(syncthingDir, "home")
-	syncthingLog = filepath.Join(syncthingDir, "service.log")
 	autostartFlag = filepath.Join(syncthingDir, ".autostart_disabled")
 	pidFile = filepath.Join(syncthingDir, "syncthing.pid")
 
+	// Logs are memory-only now; remove the old file-based log so an upgraded
+	// module does not keep a stale service.log on flash.
+	_ = os.Remove(filepath.Join(syncthingDir, "service.log"))
+
 	loadOrGenerateAuthCredentials()
 	loadDNSConfig()
+	loadLogsConfig()
 	loadNetPolicy()
+	startEventSources()
 	startNetPolicyMonitor()
+	go autostartSyncthing()
 
 	gin.DefaultWriter = io.Discard
 	gin.SetMode(gin.ReleaseMode)
@@ -655,6 +766,7 @@ func main() {
 	api := r.Group("/api")
 	{
 		api.GET("/status", handleStatus)
+		api.GET("/events", handleEvents)
 		api.POST("/start", handleStart)
 		api.POST("/stop", handleStop)
 		api.GET("/syncthing-url", handleSyncthingURL)
@@ -664,12 +776,16 @@ func main() {
 		api.POST("/autostart/enable", handleAutostartEnable)
 		api.POST("/change-password", handleChangePassword)
 		api.POST("/change-username", handleChangeUsername)
+		api.POST("/account", handleAccountUpdate)
 		api.POST("/update", handleUpdate)
 		api.GET("/dns-config", handleDNSConfigGet)
 		api.POST("/dns-config", handleDNSConfigSave)
 		api.GET("/netpolicy", handleNetPolicyGet)
 		api.POST("/netpolicy", handleNetPolicySave)
 		api.GET("/netpolicy/scan", handleNetPolicyScan)
+		api.GET("/logs", handleLogsList)
+		api.GET("/logs/stream", handleLogStream)
+		api.POST("/logs/config", handleLogsConfig)
 	}
 
 	addr := "127.0.0.1:" + port

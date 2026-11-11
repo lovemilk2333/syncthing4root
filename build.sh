@@ -14,13 +14,24 @@ mod_ver=$(grep '^version=' module.prop | sed 's/version=//')
 rm -rf build/
 mkdir -p build || true
 
+# build web UI (Vue 3 + PrimeVue, output embedded into the Go binary)
+if command -v npm >/dev/null 2>&1; then
+  echo "— building web UI (Vue + PrimeVue)..."
+  (cd web/frontend && npm ci --silent && npm run build --silent)
+elif [ -f web/frontend/dist/index.html ]; then
+  echo "— npm not found, using prebuilt web UI from web/frontend/dist"
+else
+  echo "npm not found and web/frontend/dist is missing" >&2
+  exit 1
+fi
+
 # compile web server
 echo "— compiling web server (ARM64)..."
 (cd web && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ../build/syncthing4root_webserver .)
 
 # copy module assets into staging
 echo "— copying module files..."
-cp module.prop customize.sh action.sh uninstall.sh README.md LICENSE build/
+cp module.prop customize.sh action.sh uninstall.sh README.md README.en.md LICENSE build/
 cp -r META-INF build/
 
 # create the zip from staging (everything in build/ goes in)

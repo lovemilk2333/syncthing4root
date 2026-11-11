@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 )
 
@@ -100,6 +101,25 @@ func TestIsLAN(t *testing.T) {
 	for _, s := range notLan {
 		if isLAN(net.ParseIP(s)) {
 			t.Errorf("isLAN(%s) = true, want false", s)
+		}
+	}
+}
+
+func TestSysAddrStrings(t *testing.T) {
+	addrs := []netip.AddrPort{
+		netip.MustParseAddrPort("192.168.1.1:53"),
+		netip.MustParseAddrPort("8.8.8.8:53"),
+		netip.MustParseAddrPort("1.1.1.1:5353"), // non-standard port — dropped
+		netip.MustParseAddrPort("[2606:4700:4700::1111]:53"),
+	}
+	got := sysAddrStrings(addrs)
+	want := []string{"192.168.1.1", "8.8.8.8", "2606:4700:4700::1111"}
+	if len(got) != len(want) {
+		t.Fatalf("sysAddrStrings = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("sysAddrStrings[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
 }

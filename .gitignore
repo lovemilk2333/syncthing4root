@@ -4,3 +4,5 @@
 /build
 /.claude
 /web/syncthing4root_web
+/web/frontend/dist
+/web/frontend/node_modules

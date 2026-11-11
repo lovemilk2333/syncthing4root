@@ -8,11 +8,11 @@ package main
 // goes through a configurable resolver:
 //
 //   - empty            → system resolver, then auto-detected LAN DNS servers
-//                        (dumpsys connectivity / getprop / default-route
-//                        gateway / resolv.conf), then public DoH
-//                        (doh.pub, dns.alidns.com, dns.cloudflare.com) and
-//                        DoT (tls://1.1.1.1) — DoH/DoT survive Clash TUN,
-//                        which hijacks every UDP:53 packet
+//                        (sysresolv system-resolver discovery, then dumpsys
+//                        connectivity / getprop / default-route gateway /
+//                        resolv.conf), then public DoH (dns.alidns.com, dns.cloudflare.com) and DoT
+//                        (tls://1.1.1.1) — DoH/DoT survive Clash TUN, which
+//                        hijacks every UDP:53 packet
 //   - "ip" / "ip:port" → query that DNS server directly (UDP/TCP 53)
 //   - "https://…"      → DoH (DNS-over-HTTPS JSON API)
 //   - "tls://…"        → DoT (DNS-over-TLS, RFC 7858, default port 853)
@@ -29,6 +29,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -36,8 +37,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/AdguardTeam/golibs/netutil/sysresolv"
 )
 
 var dnsCfg atomic.Value // holds dnsConfig
@@ -453,12 +457,59 @@ func dohTransport() *http.Transport {
 
 var ipv4Re = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`)
 
+// sysResolvers caches the sysresolv discovery object. It is created lazily and
+// refreshed on each detection, never polled on a timer.
+var (
+	sysResolversMu sync.Mutex
+	sysResolvers   *sysresolv.SystemResolvers
+)
+
+// systemResolverAddrs asks sysresolv which DNS servers the Go runtime's
+// net.Resolver would use. sysresolv does this by fake-dialing a random
+// hostname, so on Android — where resolv.conf is often empty and netd hands
+// DNS to the framework instead — the result is usually empty. That is fine:
+// it is just the first discovery source, the Android-specific probes below
+// remain as the fallback.
+func systemResolverAddrs() []string {
+	sysResolversMu.Lock()
+	sr := sysResolvers
+	if sr == nil {
+		created, err := sysresolv.NewSystemResolvers(nil, 53)
+		if err != nil {
+			sysResolversMu.Unlock()
+			return nil
+		}
+		sysResolvers, sr = created, created
+	} else {
+		// Best effort: keep the previous cache if the system is between
+		// networks and discovery temporarily fails.
+		_ = sr.Refresh()
+	}
+	sysResolversMu.Unlock()
+
+	return sysAddrStrings(sr.Addrs())
+}
+
+// sysAddrStrings converts discovered resolver addresses to the plain IP
+// strings the rest of dns.go works with. Non-53 ports are dropped because
+// every other code path (and the UI field) assumes the standard DNS port.
+func sysAddrStrings(addrs []netip.AddrPort) []string {
+	out := make([]string, 0, len(addrs))
+	for _, ap := range addrs {
+		if ap.Port() != 53 {
+			continue
+		}
+		out = append(out, ap.Addr().String())
+	}
+	return out
+}
+
 // detectDNSRaw gathers DNS server candidates of the active network in
-// discovery order: dumpsys connectivity, getprop net.dns*, default-route
-// gateway, resolv.conf. ctx bounds the exec calls so a wedged dumpsys can
-// never hang a dial.
+// discovery order: sysresolv system resolvers, dumpsys connectivity,
+// getprop net.dns*, default-route gateway, resolv.conf. ctx bounds the exec
+// calls so a wedged dumpsys can never hang a dial.
 func detectDNSRaw(ctx context.Context) []string {
-	var raw []string
+	raw := systemResolverAddrs()
 
 	// 1. dumpsys connectivity (root daemon) — DnsAddresses/DNSServers lists
 	if b, err := exec.CommandContext(ctx, "dumpsys", "connectivity").Output(); err == nil {

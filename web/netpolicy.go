@@ -75,11 +75,38 @@ var (
 	npCfg    netPolicyConfig // current policy config
 	npWakeCh = make(chan struct{}, 1)
 
+	// last evaluated snapshot, pushed to the UI over SSE
+	npStateMu   sync.RWMutex
+	npLastState netState
+	npHasLastSt bool
+
 	// probe hysteresis counters (monitor goroutine only, no lock needed)
 	probeUpCount   int
 	probeDownCount int
 	probeState     bool // last committed probe up/down state
 )
+
+func setLastNetState(st netState) {
+	npStateMu.Lock()
+	npLastState = st
+	npHasLastSt = true
+	npStateMu.Unlock()
+}
+
+// getLastNetState returns the cached snapshot, computing one on first use.
+func getLastNetState(c netPolicyConfig) netState {
+	npStateMu.RLock()
+	if npHasLastSt {
+		st := npLastState
+		npStateMu.RUnlock()
+		return st
+	}
+	npStateMu.RUnlock()
+
+	st := detectNetState(c, false)
+	setLastNetState(st)
+	return st
+}
 
 func netPolicyPath() string {
 	return filepath.Join(syncthingDir, ".netpolicy.json")
@@ -565,37 +592,65 @@ func detectNetState(c netPolicyConfig, commit bool) netState {
 	}
 }
 
-// startNetPolicyMonitor runs the evaluate→reconcile loop until the process exits.
+// startNetPolicyMonitor runs the evaluate→reconcile loop until the process
+// exits. It is fully event-driven: netlink, Android logcat events, inotify and
+// status changes wake it, as does saving the config. The only timer is the
+// reachability probe, which cannot be observed as an event. WiFi / battery /
+// network state are never polled on a schedule.
 func startNetPolicyMonitor() {
 	go func() {
-		for {
-			c := getNetPolicy()
-			interval := time.Duration(c.IntervalSec) * time.Second
+		refreshPolicy()
 
-			if c.Enabled {
-				st := detectNetState(c, true)
-				// don't act on a broken expression — leave Syncthing as-is
-				if st.ExprError == "" {
-					reconcile(st.ShouldRun)
+		for {
+			cfg := getNetPolicy()
+			wait := 24 * time.Hour
+			if cfg.Probe.Enabled {
+				wait = time.Duration(cfg.IntervalSec) * time.Second
+			}
+
+			timer := time.NewTimer(wait)
+			select {
+			case <-npWakeCh: // config saved
+			case <-netEventCh: // route/address/link or Android event
+			case <-settingsEventCh: // battery saver / settings changed
+			case <-statusEventCh: // pidfile changed
+			case <-timer.C:
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
 				}
 			}
 
-			select {
-			case <-time.After(interval):
-			case <-npWakeCh: // config changed — re-evaluate now
-			}
+			refreshPolicy()
 		}
 	}()
 }
 
+// refreshPolicy evaluates the current policy, reconciles Syncthing, caches the
+// snapshot and pushes it to every connected UI.
+func refreshPolicy() {
+	cfg := getNetPolicy()
+	st := detectNetState(cfg, true)
+	setLastNetState(st)
+
+	// don't act on a broken expression — leave Syncthing as-is
+	if cfg.Enabled && st.ExprError == "" {
+		reconcile(st.ShouldRun, "network policy: "+st.Explanation)
+	}
+
+	publishSnapshot()
+}
+
 // reconcile drives Syncthing toward the desired running state.
-func reconcile(shouldRun bool) {
+func reconcile(shouldRun bool, reason string) {
 	running := isRunning()
 	switch {
 	case shouldRun && !running:
-		_, _ = startSyncthing()
+		_, _ = startSyncthing(reason)
 	case !shouldRun && running:
-		_ = stopSyncthing()
+		_ = stopSyncthing(reason)
 	}
 }
 
@@ -604,9 +659,11 @@ func reconcile(shouldRun bool) {
 // handleNetPolicyGet returns the config plus a live network snapshot.
 func handleNetPolicyGet(c *gin.Context) {
 	cfg := getNetPolicy()
+	st := detectNetState(cfg, false)
+	setLastNetState(st)
 	c.JSON(200, gin.H{
 		"config": cfg,
-		"state":  detectNetState(cfg, false),
+		"state":  st,
 	})
 }
 
@@ -627,6 +684,7 @@ func handleNetPolicySave(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"message": "network policy saved", "config": getNetPolicy()})
+	publishSnapshot() // show the new config immediately; the monitor follows
 }
 
 // handleNetPolicyScan reports the current transport + SSID for whitelist entry.
