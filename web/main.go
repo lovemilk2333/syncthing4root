@@ -621,8 +621,7 @@ func handleAccountUpdate(c *gin.Context) {
 func handleDNSConfigGet(c *gin.Context) {
 	cfg := dnsCfg.Load().(dnsConfig)
 	c.JSON(http.StatusOK, gin.H{
-		"dns":      cfg.Server,
-		"detected": detectDNSServerInfo(c.Request.Context()),
+		"dns": cfg.Server,
 	})
 }
 
@@ -734,6 +733,10 @@ func main() {
 	syncthingHome = filepath.Join(syncthingDir, "home")
 	autostartFlag = filepath.Join(syncthingDir, ".autostart_disabled")
 	pidFile = filepath.Join(syncthingDir, "syncthing.pid")
+
+	// Static Linux binaries running on Android cannot use /etc/resolv.conf.
+	// Install the dnsproxyd-backed resolver before any update request is made.
+	maybeInstallAndroidDNSResolver()
 
 	// Logs are memory-only now; remove the old file-based log so an upgraded
 	// module does not keep a stale service.log on flash.

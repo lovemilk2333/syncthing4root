@@ -27,7 +27,7 @@ fi
 
 # compile web server
 echo "— compiling web server (ARM64)..."
-(cd web && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ../build/syncthing4root_webserver .)
+(cd web && GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build -o ../build/syncthing4root_webserver .)
 
 # copy module assets into staging
 echo "— copying module files..."

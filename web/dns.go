@@ -7,12 +7,9 @@ package main
 // then fails every hostname lookup. Rather than depending on that, resolution
 // goes through a configurable resolver:
 //
-//   - empty            → system resolver, then auto-detected LAN DNS servers
-//                        (sysresolv system-resolver discovery, then dumpsys
-//                        connectivity / getprop / default-route gateway /
-//                        resolv.conf), then public DoH (dns.alidns.com, dns.cloudflare.com) and DoT
-//                        (tls://1.1.1.1) — DoH/DoT survive Clash TUN, which
-//                        hijacks every UDP:53 packet
+//   - empty            → Android's system resolver daemon, then public DoH
+//                        (dns.alidns.com, dns.cloudflare.com) and DoT
+//                        (tls://1.1.1.1)
 //   - "ip" / "ip:port" → query that DNS server directly (UDP/TCP 53)
 //   - "https://…"      → DoH (DNS-over-HTTPS JSON API)
 //   - "tls://…"        → DoT (DNS-over-TLS, RFC 7858, default port 853)
@@ -152,18 +149,12 @@ func lookupIP(ctx context.Context, host string) (string, error) {
 	case cfg.Server != "":
 		return serverLookup(ctx, cfg.Server, host)
 	}
-	// no explicit config: system resolver → detected LAN DNS → public DoH →
-	// DoT. The DoH/DoT steps matter: Clash TUN hijacks every UDP:53 packet
+	// no explicit config: Android system resolver → public DoH → DoT. The
+	// DoH/DoT steps matter when the system resolver is unavailable or Clash TUN
+	// hijacks every UDP:53 packet
 	// (returning fake IPs or nothing at all), while DoH rides HTTPS on :443
 	// and DoT rides TLS on :853 — both untouched by the hijack.
 	ip, err := systemLookup(ctx, host)
-	if err != nil {
-		for _, srv := range detectLocalDNSServers(ctx) {
-			if ip, err = serverLookup(ctx, srv, host); err == nil {
-				break
-			}
-		}
-	}
 	if err != nil {
 		// domestic DoH endpoints first — reachable without a proxy
 		for _, doh := range []string{
@@ -266,18 +257,9 @@ func dohLookup(ctx context.Context, dohURL, host string) (string, error) {
 }
 
 // bootstrapIP resolves the hostname of a DoH/DoT server itself, using the
-// system resolver first and falling back to detected LAN DNS — never
-// recursing into DoH/DoT, which would need DNS to work to be a DNS fallback.
+// system resolver without recursing into DoH/DoT.
 func bootstrapIP(ctx context.Context, host string) (string, error) {
-	ip, err := systemLookup(ctx, host)
-	if err != nil {
-		for _, srv := range detectLocalDNSServers(ctx) {
-			if ip, err = serverLookup(ctx, srv, host); err == nil {
-				break
-			}
-		}
-	}
-	return ip, err
+	return systemLookup(ctx, host)
 }
 
 // dotLookup resolves host via a DNS-over-TLS server (RFC 7858), e.g.

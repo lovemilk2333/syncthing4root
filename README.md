@@ -28,7 +28,7 @@ Run Syncthing as root so the system cannot force-stop it. Comes with a **web man
 | 🔑 Account | 修改管理后台登录用户名 / 密码 |
 | 📜 Logs | 可切换 Syncthing 输出 / Web 服务 / 状态切换日志; 全部只保存在内存环形缓冲区, 不落盘; 状态切换记录 ISO 时间与原因; 保留条目数可配置 (默认 128) |
 | 🔄 Check & Update Syncthing | 检查并更新 Syncthing 到最新版 |
-| 🌐 DNS Resolver | 配置更新检查使用的 DNS (自动检测局域网 DNS / 指定 IP / DoH / DoT), 自动模式忽略非局域网 DNS; 系统 DNS 通过 `github.com/AdguardTeam/golibs/netutil/sysresolv` 发现, 再回退到 Android 专有探针, 解决 Android root 进程 DNS 解析失败问题 |
+| 🌐 DNS Resolver | 配置更新检查使用的 DNS (Android 系统 DNS / 指定 IP / DoH / DoT); DNS 留空时通过 Android `dnsproxyd` 使用当前网络的系统 DNS, 失败后回退到 DoH 和 DoT, 避免自动选取局域网 DNS 地址 |
 
 管理后台默认地址: `https://127.0.0.1:48344/ui/` (默认账号 `admin` / `admin`)
 
@@ -66,8 +66,8 @@ Run Syncthing as root so the system cannot force-stop it. Comes with a **web man
 | POST | `/api/autostart/enable` | 启用开机自启动 |
 | POST | `/api/autostart/disable` | 禁用开机自启动 |
 | POST | `/api/update` | 更新 Syncthing 到最新版 |
-| GET  | `/api/dns-config` | 读取 DNS 解析器配置 + 自动检测的 DNS 列表 (每项标注是否为局域网) |
-| POST | `/api/dns-config` | 保存 DNS 配置 (留空=自动 / IP / IP:端口 / DoH `https://` / DoT `tls://`) |
+| GET  | `/api/dns-config` | 读取 DNS 解析器配置 |
+| POST | `/api/dns-config` | 保存 DNS 配置 (留空=Android 系统 DNS / IP / IP:端口 / DoH `https://` / DoT `tls://`) |
 | POST | `/api/account` | 一次修改用户名和/或密码 (需当前密码验证, 字段留空表示不修改) |
 | POST | `/api/change-password` | 修改登录密码 (需旧密码验证) |
 | POST | `/api/change-username` | 修改登录用户名 (需密码验证) |
@@ -207,3 +207,5 @@ cd web && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ../build/syncthing4r
 
 本模块配置与打包脚本使用 BSD 3-Clause 许可, 具体条款见 [LICENSE](LICENSE).
 Syncthing 本身基于 MPL-2.0, 请参阅 https://github.com/syncthing/syncthing.
+
+部分实现参考的 <https://github.com/Xinlong-Wu/tailscale-oh/blob/v1.104.2/feature/androiddns/androiddns.go> 使用 BSD 3-Clause 许可

@@ -10,7 +10,6 @@ const expanded = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const server = ref('')
-const detected = ref([])
 
 const presets = [
   { label: 'auto', value: '' },
@@ -30,7 +29,6 @@ async function load() {
   try {
     const data = await api('/api/dns-config')
     server.value = data.dns || ''
-    detected.value = data.detected || []
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Cannot load DNS config', detail: err.message, life: 4500 })
   } finally {
@@ -61,8 +59,7 @@ async function save() {
 
     <div v-show="expanded" style="margin-top: 14px">
       <div class="muted" style="margin-bottom: 10px">
-        Used for the update check. Android's system DNS often fails for root daemons — leave empty
-        to auto-detect the LAN DNS (non-LAN servers are ignored and shown struck through below), or
+        Used for the update check. Leave empty to use Android's system DNS resolver, or
         set an IP (<code>192.168.1.1</code>, <code>192.168.1.1:5353</code>), a DoH URL
         (<code>https://…</code>) or a DoT server (<code>tls://…</code>).
       </div>
@@ -80,22 +77,6 @@ async function save() {
       </div>
 
       <InputText v-model="server" fluid placeholder="DNS server (empty = auto)" style="margin-bottom: 8px" />
-
-      <div class="muted detected" style="margin-bottom: 10px">
-        Detected:
-        <template v-if="loading">…</template>
-        <template v-else-if="detected.length === 0">—</template>
-        <template v-else>
-          <span
-            v-for="(d, i) in detected"
-            :key="d.ip"
-            :class="{ ignored: !d.lan }"
-            :title="d.lan ? 'LAN DNS server — used in auto mode' : 'non-LAN — ignored in auto mode'"
-          >
-            {{ d.ip }}{{ i < detected.length - 1 ? ', ' : '' }}
-          </span>
-        </template>
-      </div>
 
       <Button label="Save DNS" severity="secondary" outlined class="btn-block" :loading="saving" @click="save" />
     </div>
